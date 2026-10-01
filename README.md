@@ -80,6 +80,7 @@ Everything is environment variables, all optional:
 | `JUDGE_ROUTER_MAX_QUOTA_PERCENT` | `95` | z.ai token quota at or above which it counts as exhausted |
 | `JUDGE_ROUTER_PROBE_TTL_MS` | `60000` | how long a probe result is trusted |
 | `JUDGE_ROUTER_PROBE_TIMEOUT_MS` | `3000` | HTTP timeout for a probe |
+| `JUDGE_ROUTER_STATUS` | `full` | footer verbosity: `full`, `compact`, `off` |
 | `JUDGE_ROUTER_USAGE_FILE` | `<agent dir>/judge-router-usage.json` | where the judge-usage counter is stored |
 
 Model references are `provider/id`, split on the **first** slash only, so ids such as
@@ -124,16 +125,31 @@ read the **selected** model's provider to decide what to poll. Selected here is 
 no vendor, so their automatic indicators go quiet. (Manual paths still work — the `/usage` panel of
 `pi-usage-bars` lists every provider and can be opened for any of them.)
 
-The router closes that gap in two places:
+The router closes that gap in three places.
 
 **A footer status line**, updated on every dispatch and every probe:
 
 ```
-→ deepseek/deepseek-flash · zai tokens 32%/6% · deepseek USD 42.00
+→ deepseek/deepseek-flash · 5h ███░░░░░ 32% ⟳1h12m · W ░░░░░░░░ 6% ⟳3d · ds $45.94 · sess ds $0.67 zai $0.13
 ```
 
-It shows the provider-qualified model actually dispatched (so `glm-5.3-flash` is never ambiguous
-between z.ai and Fireworks) and the last reading of each probed provider.
+- the **provider-qualified model actually dispatched**, so a `glm-5.3-flash` is never ambiguous
+  between z.ai and Fireworks;
+- each probe reading, with a bar and a reset countdown for quota windows;
+- the **session cost split per provider**. This one matters: the built-in footer shows a single
+  cumulative cost for the whole session, which mixes providers that do not bill the same way — a
+  prepaid dollar balance and a plan measured in quota percentages. Split apart, it is readable.
+
+`JUDGE_ROUTER_STATUS=compact` drops the bars and the split; `off` disables the line entirely.
+
+**`/usage-breakdown`**, a per-model and per-provider table for the current session:
+
+```
+model                              calls        in       out   cache-r      cost
+deepseek/deepseek-flash              223    470.3k    232.0k     41.9M    $0.671
+zai/glm-5.3-flash                     41    304.0k      9.1k      2.7M    $0.130
+TOTAL                                264    774.3k    241.1k     44.5M    $0.801
+```
 
 **`/jev-usage`**, a command that reports the judge calls this router made:
 
@@ -153,19 +169,23 @@ whole surface — so the authoritative credit balance stays in the vendor consol
 ```
 src/judge-router.ts        the extension: virtual model, routing rules, probe cache, usage, pi wiring
 src/provider-probe.ts      endpoints, payload parsers and the probe itself — no pi imports
+src/format.ts              bars, token counts, money, countdowns — no pi imports
+src/session-report.ts      session aggregation and the report table — no pi imports
 src/usage-store.ts         persistent judge-usage counter — no pi imports
 tests/provider-probe.test.ts
+tests/format.test.ts
+tests/session-report.test.ts
 tests/usage-store.test.ts
 docs/architecture.md       the decisions, the measurements and the trade-offs
 ```
 
-Both `src/provider-probe.ts` and `src/usage-store.ts` have no dependency on pi, so they are
-unit-testable in isolation and reusable from any other extension.
+Every module except the extension itself has no dependency on pi, so they are unit-testable in
+isolation and reusable from any other extension.
 
 ## Development
 
 ```bash
-bun test          # 32 unit tests, no network, no credentials
+bun test          # 59 unit tests, no network, no credentials
 ```
 
 The extension is loaded in place by `pi install /path/to/pi-judge-router`, so editing the repository

@@ -164,6 +164,20 @@ because TypeSafe's public surface is just `POST /v1/systemone` and `GET /v1/mode
 dozen plausible account/usage paths all return 404. The honest answer for "how many credits are
 left" is the vendor console; the honest answer for "what did routing cost" is this store.
 
+The session cost deserves one more note, because the built-in footer reports it as a single number.
+That number is a sum over every model used in the session at catalog prices — and the providers in
+this setup do not bill the same way. DeepSeek is prepaid: those dollars are real and the balance
+falls. z.ai is a plan measured in quota percentages: those dollars are a list-price counterfactual,
+and the binding constraint is the window, not the wallet. Neither the footer nor a vendor indicator
+can label that difference, because the selected provider is the virtual one. Splitting the same
+numbers per provider is the cheapest way to make the consumption legible, which is why the status
+line ends with `sess ds $0.67 zai $0.13` instead of one total.
+
+One more design note on the status line: the probe used to return a boolean plus a detail string.
+It now returns structured readings — quota windows with percentages and reset times, a balance with
+its currency — and the formatting lives in a separate module. A boolean would have thrown the number
+away exactly where it was read, and a detail string would have locked the display into the parser.
+
 ## 9. Known limits
 
 - **No chain.** One substitute per primary. Chaining is easy to add but multiplies the states to reason

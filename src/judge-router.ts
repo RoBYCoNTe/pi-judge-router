@@ -47,6 +47,21 @@ import {
 	type Target,
 } from "./provider-probe.ts";
 import {
+	formatMoney,
+	humanizeDuration,
+	renderBar,
+	shortProvider,
+} from "./format.ts";
+import {
+	aggregate,
+	byModel,
+	byProvider,
+	formatCostSplit,
+	formatTable,
+	samplesFromEntries,
+	type UsageSample,
+} from "./session-report.ts";
+import {
 	formatUsage,
 	loadStore,
 	recordUsage,
@@ -95,6 +110,12 @@ const PROBE_OPTIONS: ProbeOptions = {
 
 const PROBE_TTL_MS = envNumber("JUDGE_ROUTER_PROBE_TTL_MS", 60_000);
 
+/** Footer verbosity: `full` (bars, reset times, session split), `compact`, `off`. */
+const STATUS_MODE = (() => {
+	const raw = envString("JUDGE_ROUTER_STATUS", "full");
+	return raw === "compact" || raw === "off" ? raw : "full";
+})();
+
 const EDIT_TOOLS = new Set(["edit", "write"]);
 
 // ---------------------------------------------------------------------------
@@ -122,23 +143,78 @@ function usageFile(): string {
 let usageStore: UsageStore | undefined;
 
 /**
- * Footer status: what we routed to, plus the cached provider readings. This is
- * the piece a virtual model hides from provider-based indicator extensions,
- * which read the selected model's provider and see only `judge`.
+ * Footer status: what we routed to, the cached provider readings, and the
+ * session cost split. This is the piece a virtual model hides from
+ * provider-based indicator extensions, which read the selected model's
+ * provider and see only `judge`. The session split matters because the
+ * providers do not bill the same way: one is a prepaid dollar balance, the
+ * other a plan measured in quota percentages.
  */
 function refreshStatus(ctx: ExtensionContext): void {
+	if (STATUS_MODE === "off") return;
 	try {
 		const parts: string[] = [];
 		if (routed) parts.push(routed);
+
+		const readings: string[] = [];
 		for (const [provider, entry] of health) {
-			if (Date.now() - entry.at < PROBE_TTL_MS) {
-				parts.push(`${provider} ${entry.outcome.detail}`);
-			}
+			if (Date.now() - entry.at >= PROBE_TTL_MS) continue;
+			readings.push(
+				STATUS_MODE === "compact"
+					? compactReading(provider, entry.outcome)
+					: detailedReading(provider, entry.outcome),
+			);
 		}
+		if (readings.length > 0) parts.push(readings.join(" · "));
+
+		if (STATUS_MODE === "full") {
+			const split = formatCostSplit(aggregate(sessionSamples(ctx), byProvider));
+			if (split) parts.push(`sess ${split}`);
+		}
+
 		ctx.ui.setStatus("judge-router", parts.length > 0 ? parts.join(" · ") : undefined);
 	} catch {
 		// No UI (headless, RPC): status is cosmetic, never fatal.
 	}
+}
+
+/** Bars and reset countdowns, for `JUDGE_ROUTER_STATUS=full`. */
+function detailedReading(provider: string, outcome: ProbeOutcome): string {
+	if (outcome.windows !== undefined && outcome.windows.length > 0) {
+		return outcome.windows
+			.map((window) => {
+				const reset =
+					window.resetsAt === undefined
+						? ""
+						: ` ⟳${humanizeDuration(window.resetsAt - Date.now())}`;
+				return `${window.label} ${renderBar(window.percent)} ${Math.round(window.percent)}%${reset}`;
+			})
+			.join(" · ");
+	}
+	if (outcome.balance !== undefined) {
+		return `${shortProvider(provider)} ${formatMoney(outcome.balance.amount)}`;
+	}
+	return `${shortProvider(provider)} ${outcome.note ?? "?"}`;
+}
+
+/** Numbers only, for `JUDGE_ROUTER_STATUS=compact`. */
+function compactReading(provider: string, outcome: ProbeOutcome): string {
+	const tag = shortProvider(provider);
+	if (outcome.windows !== undefined && outcome.windows.length > 0) {
+		const percents = outcome.windows
+			.map((window) => `${Math.round(window.percent)}%`)
+			.join("/");
+		return `${tag} ${percents}`;
+	}
+	if (outcome.balance !== undefined) {
+		return `${tag} ${formatMoney(outcome.balance.amount)}`;
+	}
+	return `${tag} ${outcome.note ?? "?"}`;
+}
+
+/** Every assistant message on the current branch, as a usage sample. */
+function sessionSamples(ctx: ExtensionContext): UsageSample[] {
+	return samplesFromEntries(ctx.sessionManager.getBranch());
 }
 
 /**
@@ -406,6 +482,21 @@ export default function (pi: ExtensionAPI) {
 				state.phase === "implementation"
 					? IMPLEMENT_THINKING
 					: request.thinkingLevel,
+			);
+		},
+	});
+
+	pi.registerCommand("usage-breakdown", {
+		description: "Per-model and per-provider usage for the current session",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			const samples = sessionSamples(ctx);
+			ctx.ui.notify(
+				[
+					formatTable(aggregate(samples, byModel), { title: "model" }),
+					"",
+					formatTable(aggregate(samples, byProvider), { title: "provider" }),
+				].join("\n"),
+				"info",
 			);
 		},
 	});

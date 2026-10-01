@@ -138,25 +138,60 @@ describe("deepseekHasCredit", () => {
 	});
 });
 
-describe("probe details (footer strings)", () => {
+describe("probe outcomes (structured)", () => {
 	test("deepseek reports the balance it read", () => {
-		expect(describeDeepseek(DEEPSEEK)).toEqual({ usable: true, detail: "USD 42.00" });
-	});
-
-	test("deepseek still reports the number when it is unusable", () => {
-		expect(describeDeepseek({ ...DEEPSEEK, is_available: false })).toEqual({
-			usable: false,
-			detail: "USD 42.00",
+		expect(describeDeepseek(DEEPSEEK)).toEqual({
+			usable: true,
+			balance: { amount: 42, currency: "USD" },
 		});
 	});
 
-	test("zai reports every token window", () => {
-		expect(describeZai(ZAI)).toEqual({ usable: true, detail: "tokens 32%/6%" });
+	test("deepseek keeps the number when it is unusable", () => {
+		expect(describeDeepseek({ ...DEEPSEEK, is_available: false })).toEqual({
+			usable: false,
+			balance: { amount: 42, currency: "USD" },
+		});
 	});
 
-	test("unreadable payloads say so and stay usable", () => {
-		expect(describeDeepseek(null)).toEqual({ usable: true, detail: "unreadable" });
-		expect(describeZai(null)).toEqual({ usable: true, detail: "unreadable" });
+	test("zai reports every token window, soonest resetting first", () => {
+		const outcome = describeZai({
+			data: {
+				limits: [
+					{ type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 6, nextResetTime: 2_000 },
+					{ type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 32, nextResetTime: 1_000 },
+					{ type: "TIME_LIMIT", percentage: 0, remaining: 1000 },
+				],
+			},
+		});
+		expect(outcome.usable).toBe(true);
+		expect(outcome.windows).toEqual([
+			{ label: "5h", percent: 32, resetsAt: 1_000 },
+			{ label: "W", percent: 6, resetsAt: 2_000 },
+		]);
+	});
+
+	test("zai windows omit the reset when the vendor does not send one", () => {
+		const outcome = describeZai({
+			data: { limits: [{ type: "TOKENS_LIMIT", percentage: 10 }] },
+		});
+		expect(outcome.windows).toEqual([{ label: "5h", percent: 10 }]);
+	});
+
+	test("a full window makes the provider unusable", () => {
+		const outcome = describeZai({
+			data: {
+				limits: [
+					{ type: "TOKENS_LIMIT", percentage: 12, nextResetTime: 1 },
+					{ type: "TOKENS_LIMIT", percentage: 99, nextResetTime: 2 },
+				],
+			},
+		});
+		expect(outcome.usable).toBe(false);
+	});
+
+	test("unreadable payloads explain themselves and stay usable", () => {
+		expect(describeDeepseek(null)).toEqual({ usable: true, note: "unreadable" });
+		expect(describeZai(null)).toEqual({ usable: true, note: "unreadable" });
 	});
 });
 

@@ -41,12 +41,34 @@ export const DEFAULT_PROBE_OPTIONS: ProbeOptions = {
 	timeoutMs: 3_000,
 };
 
-/** Result of a probe: the verdict plus a short string for the footer. */
+/** One quota window reported by a provider. */
+export interface QuotaWindow {
+	label: string;
+	percent: number;
+	/** Epoch milliseconds, when the provider reports it. */
+	resetsAt?: number;
+}
+
+/** A prepaid balance, in the provider's own currency. */
+export interface BalanceReading {
+	amount: number;
+	currency: string;
+}
+
+/**
+ * Result of a probe, structured so the caller can render it however it likes.
+ * `note` is set when there is nothing numeric to show (unreadable payload,
+ * probe failure), so the footer can say why instead of showing a fake zero.
+ */
 export interface ProbeOutcome {
 	/** `true` = use the primary provider. Unknown states also answer `true`. */
 	usable: boolean;
-	/** Compact human detail, e.g. `USD 42.00` or `tokens 32%/6%`. */
-	detail: string;
+	/** z.ai: token windows, soonest-resetting first. */
+	windows?: QuotaWindow[];
+	/** DeepSeek: prepaid balance. */
+	balance?: BalanceReading;
+	/** Explanation shown when no number could be read. */
+	note?: string;
 }
 
 export const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
@@ -138,15 +160,15 @@ export function describeDeepseek(
 	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
 ): ProbeOutcome {
 	const root = asRecord(payload);
-	if (!root) return { usable: true, detail: "unreadable" };
+	if (!root) return { usable: true, note: "unreadable" };
 
 	const infos = (Array.isArray(root.balance_infos) ? root.balance_infos : [])
 		.map(asRecord)
 		.filter((entry): entry is Record<string, unknown> => entry !== null);
 	if (infos.length === 0) {
 		return root.is_available === false
-			? { usable: false, detail: "unavailable" }
-			: { usable: true, detail: "no balance" };
+			? { usable: false, note: "unavailable" }
+			: { usable: true, note: "no balance" };
 	}
 
 	const usd = infos.find(
@@ -156,14 +178,14 @@ export function describeDeepseek(
 	);
 	const chosen = usd ?? infos[0]!;
 	const balance = readNumber(chosen.total_balance ?? chosen.totalBalance);
-	const currency = typeof chosen.currency === "string"
-		? chosen.currency.toUpperCase()
-		: "USD";
+	const currency =
+		typeof chosen.currency === "string" ? chosen.currency.toUpperCase() : "USD";
 
-	if (balance === null) return { usable: true, detail: `${currency} ?` };
-	const usable =
-		root.is_available !== false && balance >= options.minBalanceUsd;
-	return { usable, detail: `${currency} ${balance.toFixed(2)}` };
+	if (balance === null) return { usable: true, note: `${currency} ?` };
+	return {
+		usable: root.is_available !== false && balance >= options.minBalanceUsd,
+		balance: { amount: balance, currency },
+	};
 }
 
 /** Boolean view of {@link describeDeepseek}. */
@@ -193,25 +215,46 @@ export function describeZai(
 	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
 ): ProbeOutcome {
 	const root = asRecord(payload);
-	if (!root) return { usable: true, detail: "unreadable" };
+	if (!root) return { usable: true, note: "unreadable" };
 	const data = asRecord(root.data) ?? root;
 
 	const limits = (Array.isArray(data.limits) ? data.limits : [])
 		.map(asRecord)
 		.filter((entry): entry is Record<string, unknown> => entry !== null);
-	if (limits.length === 0) return { usable: true, detail: "no limits" };
+	if (limits.length === 0) return { usable: true, note: "no limits" };
 
 	const tokenLimits = limits.filter((entry) => entry.type === "TOKENS_LIMIT");
-	if (tokenLimits.length === 0) return { usable: true, detail: "no token windows" };
+	if (tokenLimits.length === 0) return { usable: true, note: "no token windows" };
 
-	const percentages = tokenLimits
-		.map((entry) => readNumber(entry.percentage))
-		.filter((value): value is number => value !== null);
-	if (percentages.length === 0) return { usable: true, detail: "tokens ?" };
+	const parsed = tokenLimits
+		.map((entry) => ({
+			percent: readNumber(entry.percentage),
+			resetsAt: readNumber(entry.nextResetTime) ?? undefined,
+		}))
+		.filter((entry): entry is { percent: number; resetsAt: number | undefined } =>
+			entry.percent !== null,
+		);
+	if (parsed.length === 0) return { usable: true, note: "tokens ?" };
 
-	const usable = percentages.every((value) => value < options.maxQuotaPercent);
-	const detail = `tokens ${percentages.map((value) => `${Math.round(value)}%`).join("/")}`;
-	return { usable, detail };
+	// Soonest-resetting window first, so the labels track the real windows even
+	// if the vendor reorders them. The vendor does not document which unit maps
+	// to which horizon, so the labels are display-only: exhaustion is decided by
+	// the percentages against `maxQuotaPercent`, never by the label.
+	parsed.sort((a, b) => (a.resetsAt ?? Number.POSITIVE_INFINITY) - (b.resetsAt ?? Number.POSITIVE_INFINITY));
+	const labels = ["5h", "W", "T3", "T4"];
+	const windows: QuotaWindow[] = parsed.map((entry, index) => {
+		const window: QuotaWindow = {
+			label: labels[index] ?? `T${index + 1}`,
+			percent: entry.percent,
+		};
+		if (entry.resetsAt !== undefined) window.resetsAt = entry.resetsAt;
+		return window;
+	});
+
+	return {
+		usable: windows.every((window) => window.percent < options.maxQuotaPercent),
+		windows,
+	};
 }
 
 /** Boolean view of {@link describeZai}. */
@@ -255,7 +298,7 @@ export async function probeProvider(
 	if (provider === "zai") {
 		return describeZai(await fetchJson(ZAI_QUOTA_URL, apiKey, signal), options);
 	}
-	return { usable: true, detail: "not probed" };
+	return { usable: true, note: "not probed" };
 }
 
 /** AbortSignal that fires on timeout, or on the caller's abort, whichever is first. */
