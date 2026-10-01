@@ -1,0 +1,54 @@
+{
+  "name": "pi-judge-router",
+  "version": "0.1.0",
+  "description": "Judge-based model routing with provider-aware credit fallback for the pi coding agent",
+  "type": "module",
+  "license": "MIT",
+  "author": "Roberto Conte Rosito",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RoBYCoNTe/pi-judge-router.git"
+  },
+  "homepage": "https://github.com/RoBYCoNTe/pi-judge-router#readme",
+  "bugs": {
+    "url": "https://github.com/RoBYCoNTe/pi-judge-router/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "model-router",
+    "virtual-model",
+    "judge",
+    "typesafe",
+    "jev",
+    "fallback",
+    "llm-cost"
+  ],
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./src/judge-router.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/judge-router.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/bun": "latest"
+  }
+}
