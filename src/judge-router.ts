@@ -414,6 +414,21 @@ async function choosePlanningModel(
 }
 
 export default function (pi: ExtensionAPI) {
+	// Show something from the first second. The line is otherwise empty until the
+	// first dispatch, which reads like a broken plugin.
+	pi.on("session_start", async (_event, ctx) => {
+		const model = ctx.model;
+		if (model) {
+			// Plain `provider/id` while it is only the selection; the router switches
+			// to `→ provider/id` once a request has actually been dispatched.
+			routed =
+				model.provider === "judge"
+					? `${model.provider}/${model.id}`
+					: `→ ${model.provider}/${model.id}`;
+		}
+		refreshStatus(ctx);
+	});
+
 	// Keep the footer truthful while the router is idle. Selecting a physical
 	// model means route() stops running, so without these two hooks the line
 	// would freeze on the last dispatched model and on a stale cost split.
