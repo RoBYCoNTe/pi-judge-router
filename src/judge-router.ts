@@ -26,6 +26,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -207,7 +208,17 @@ function refreshStatus(ctx: ExtensionContext): void {
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		ctx.ui.setWidget(
 			WIDGET_KEY,
-			text === undefined ? undefined : [ctx.ui.theme.fg("dim", text)],
+			text === undefined
+				? undefined
+				: (_tui, theme) => ({
+						// A component factory, not `string[]`: pi wraps string arrays in
+						// `new Text(line, 1, 0)`, and that hardcoded paddingX is the leading
+						// space. Rendering ourselves keeps the line flush with pi's own rows.
+						invalidate() {},
+						render: (width: number): string[] => [
+							truncateToWidth(theme.fg("dim", text), width, theme.fg("dim", "…")),
+						],
+					}),
 			{ placement: PLACEMENT === "above" ? "aboveEditor" : "belowEditor" },
 		);
 	} catch {
