@@ -81,6 +81,7 @@ Everything is environment variables, all optional:
 | `JUDGE_ROUTER_PROBE_TTL_MS` | `60000` | how long a probe result is trusted |
 | `JUDGE_ROUTER_PROBE_TIMEOUT_MS` | `3000` | HTTP timeout for a probe |
 | `JUDGE_ROUTER_STATUS` | `full` | footer verbosity: `full`, `compact`, `off` |
+| `JUDGE_ROUTER_BAR_WIDTH` | `4` | footer bar width in cells; `0` keeps the numbers and drops the bars |
 | `JUDGE_ROUTER_STATUS_FILE` | unset | debug: append every rendered status line to this file |
 | `JUDGE_ROUTER_USAGE_FILE` | `<agent dir>/judge-router-usage.json` | where the judge-usage counter is stored |
 
@@ -131,12 +132,13 @@ The router closes that gap in three places.
 **A footer status line**, updated on every dispatch and every probe:
 
 ```
-→ deepseek/deepseek-flash · 5h ███░░░░░ 32% ⟳1h12m · W ░░░░░░░░ 6% ⟳3d · ds $45.94 · sess ds $0.67 zai $0.13
+→ deepseek/deepseek-flash · ds $45.94 · zai 5h █░░░ 32% ⟳1h · W ░░░░ 6% ⟳3d · sess ds $0.67 zai $0.13
 ```
 
 - the **provider-qualified model actually dispatched**, so a `glm-5.3-flash` is never ambiguous
   between z.ai and Fireworks;
-- each probe reading, with a bar and a reset countdown for quota windows;
+- each probe reading, with the provider name in front (a bare bar says nothing about whose quota it
+  is), a short bar and a coarse reset countdown;
 - the **session cost split per provider**. This one matters: the built-in footer shows a single
   cumulative cost for the whole session, which mixes providers that do not bill the same way — a
   prepaid dollar balance and a plan measured in quota percentages. Split apart, it is readable.

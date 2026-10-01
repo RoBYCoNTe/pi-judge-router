@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	formatMoney,
+	formatReading,
 	formatTokens,
 	humanizeDuration,
 	renderBar,
@@ -66,6 +67,69 @@ describe("humanizeDuration", () => {
 	test("past or invalid deadlines read as expired", () => {
 		expect(humanizeDuration(0)).toBe("now");
 		expect(humanizeDuration(-1000)).toBe("now");
+	});
+
+	test("short mode keeps the largest unit only", () => {
+		expect(humanizeDuration(72 * 60_000, { short: true })).toBe("1h");
+		expect(humanizeDuration((6 * 24 + 17) * 60 * 60_000, { short: true })).toBe("6d");
+		expect(humanizeDuration(45 * 60_000, { short: true })).toBe("45m");
+		expect(humanizeDuration(30_000, { short: true })).toBe("<1m");
+	});
+});
+
+describe("formatReading", () => {
+	const now = 1_000_000_000_000;
+
+	test("always names the provider, so a bare bar is never ambiguous", () => {
+		expect(
+			formatReading(
+				"zai",
+				{ usable: true, windows: [{ label: "5h", percent: 32 }] },
+				{ now },
+			),
+		).toBe("zai 5h █░░░ 32%");
+	});
+
+	test("renders every window with its reset countdown", () => {
+		const outcome = {
+			usable: true,
+			windows: [
+				{ label: "5h", percent: 32, resetsAt: now + 3 * 3_600_000 },
+				{ label: "W", percent: 6, resetsAt: now + (6 * 24 + 17) * 3_600_000 },
+			],
+		};
+		expect(formatReading("zai", outcome, { now })).toBe(
+			"zai 5h █░░░ 32% ⟳3h · W ░░░░ 6% ⟳6d",
+		);
+	});
+
+	test("bar width is configurable, and 0 drops the bar", () => {
+		const outcome = { usable: true, windows: [{ label: "5h", percent: 50 }] };
+		expect(formatReading("zai", outcome, { now, barWidth: 8 })).toBe("zai 5h ████░░░░ 50%");
+		expect(formatReading("zai", outcome, { now, barWidth: 0 })).toBe("zai 5h 50%");
+	});
+
+	test("compact mode keeps the tag and drops the bars", () => {
+		const outcome = {
+			usable: true,
+			windows: [
+				{ label: "5h", percent: 32 },
+				{ label: "W", percent: 6 },
+			],
+		};
+		expect(formatReading("zai", outcome, { compact: true, now })).toBe("zai 32%/6%");
+	});
+
+	test("renders a balance with its short provider tag", () => {
+		expect(
+			formatReading("deepseek", { usable: true, balance: { amount: 45.7, currency: "USD" } }, { now }),
+		).toBe("ds $45.70");
+	});
+
+	test("falls back to the note when there is no number", () => {
+		expect(formatReading("zai", { usable: true, note: "probe failed" }, { now })).toBe(
+			"zai probe failed",
+		);
 	});
 });
 

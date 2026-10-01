@@ -47,12 +47,7 @@ import {
 	type ProbeOutcome,
 	type Target,
 } from "./provider-probe.ts";
-import {
-	formatMoney,
-	humanizeDuration,
-	renderBar,
-	shortProvider,
-} from "./format.ts";
+import { formatReading } from "./format.ts";
 import {
 	aggregate,
 	byModel,
@@ -117,6 +112,9 @@ const STATUS_MODE = (() => {
 	return raw === "compact" || raw === "off" ? raw : "full";
 })();
 
+/** Bar width in the footer, in cells. `0` keeps the numbers and drops the bars. */
+const BAR_WIDTH = envNumber("JUDGE_ROUTER_BAR_WIDTH", 4);
+
 const EDIT_TOOLS = new Set(["edit", "write"]);
 
 // ---------------------------------------------------------------------------
@@ -158,11 +156,13 @@ function refreshStatus(ctx: ExtensionContext): void {
 		if (routed) parts.push(routed);
 
 		const readings: string[] = [];
-		for (const [provider, entry] of health) {
+		for (const provider of [...health.keys()].sort()) {
+			const entry = health.get(provider)!;
 			readings.push(
-				STATUS_MODE === "compact"
-					? compactReading(provider, entry.outcome)
-					: detailedReading(provider, entry.outcome),
+				formatReading(provider, entry.outcome, {
+					compact: STATUS_MODE === "compact",
+					barWidth: BAR_WIDTH,
+				}),
 			);
 		}
 		if (readings.length > 0) parts.push(readings.join(" · "));
@@ -214,39 +214,6 @@ function refreshReadings(ctx: ExtensionContext): void {
 	}
 }
 
-/** Bars and reset countdowns, for `JUDGE_ROUTER_STATUS=full`. */
-function detailedReading(provider: string, outcome: ProbeOutcome): string {
-	if (outcome.windows !== undefined && outcome.windows.length > 0) {
-		return outcome.windows
-			.map((window) => {
-				const reset =
-					window.resetsAt === undefined
-						? ""
-						: ` ⟳${humanizeDuration(window.resetsAt - Date.now())}`;
-				return `${window.label} ${renderBar(window.percent)} ${Math.round(window.percent)}%${reset}`;
-			})
-			.join(" · ");
-	}
-	if (outcome.balance !== undefined) {
-		return `${shortProvider(provider)} ${formatMoney(outcome.balance.amount)}`;
-	}
-	return `${shortProvider(provider)} ${outcome.note ?? "?"}`;
-}
-
-/** Numbers only, for `JUDGE_ROUTER_STATUS=compact`. */
-function compactReading(provider: string, outcome: ProbeOutcome): string {
-	const tag = shortProvider(provider);
-	if (outcome.windows !== undefined && outcome.windows.length > 0) {
-		const percents = outcome.windows
-			.map((window) => `${Math.round(window.percent)}%`)
-			.join("/");
-		return `${tag} ${percents}`;
-	}
-	if (outcome.balance !== undefined) {
-		return `${tag} ${formatMoney(outcome.balance.amount)}`;
-	}
-	return `${tag} ${outcome.note ?? "?"}`;
-}
 
 /** Every assistant message on the current branch, as a usage sample. */
 function sessionSamples(ctx: ExtensionContext): UsageSample[] {
