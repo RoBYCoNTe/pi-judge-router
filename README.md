@@ -80,8 +80,9 @@ Everything is environment variables, all optional:
 | `JUDGE_ROUTER_MAX_QUOTA_PERCENT` | `95` | z.ai token quota at or above which it counts as exhausted |
 | `JUDGE_ROUTER_PROBE_TTL_MS` | `60000` | how long a probe result is trusted |
 | `JUDGE_ROUTER_PROBE_TIMEOUT_MS` | `3000` | HTTP timeout for a probe |
-| `JUDGE_ROUTER_STATUS` | `full` | footer verbosity: `full`, `compact`, `off` |
-| `JUDGE_ROUTER_BAR_WIDTH` | `4` | footer bar width in cells; `0` keeps the numbers and drops the bars |
+| `JUDGE_ROUTER_STATUS` | `full` | footer line verbosity: `full`, `compact`, `off` |
+| `JUDGE_ROUTER_PLACEMENT` | `below` | where the line lives: `below` / `above` the editor, or `status` for the shared status row |
+| `JUDGE_ROUTER_BAR_WIDTH` | `4` | bar width in cells; `0` keeps the numbers and drops the bars |
 | `JUDGE_ROUTER_STATUS_FILE` | unset | debug: append every rendered status line to this file |
 | `JUDGE_ROUTER_USAGE_FILE` | `<agent dir>/judge-router-usage.json` | where the judge-usage counter is stored |
 
@@ -130,6 +131,13 @@ no vendor, so their automatic indicators go quiet. (Manual paths still work — 
 The router closes that gap in three places.
 
 **A footer status line**, updated on every dispatch and every probe:
+
+The line lives in its **own widget row** below the editor by default, not in the shared status line.
+That is deliberate: pi joins every extension's status into a single row with `join(" ")` and then
+truncates it to the terminal width, so a long line silently eats the others — and `sanitizeStatusText`
+rewrites every newline to a space, so the row cannot be split from the inside. A widget gives the line
+its own space and leaves the status row to the other extensions. `JUDGE_ROUTER_PLACEMENT=above`
+moves it above the editor; `=status` puts it back on the shared row.
 
 ```
 → deepseek/deepseek-flash · ds $45.94 · zai 5h █░░░ 32% ⟳1h · W ░░░░ 6% ⟳3d · sess ds $0.67 zai $0.13

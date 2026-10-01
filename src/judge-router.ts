@@ -142,39 +142,74 @@ function usageFile(): string {
 let usageStore: UsageStore | undefined;
 
 /**
- * Footer status: what we routed to, the cached provider readings, and the
- * session cost split. This is the piece a virtual model hides from
- * provider-based indicator extensions, which read the selected model's
- * provider and see only `judge`. The session split matters because the
- * providers do not bill the same way: one is a prepaid dollar balance, the
- * other a plan measured in quota percentages.
+ * Where the line lives.
+ *
+ * The status line is shared with every other extension and pi joins all of
+ * them into one row with `join(" ")`, then truncates to the terminal width —
+ * so a long line silently eats the others. `sanitizeStatusText` also rewrites
+ * every `\n` to a space, so the row cannot be split from the inside. The way
+ * to stop competing is a widget: its own row above or below the editor.
+ *
+ * `below` (default) | `above` | `status` (back to the shared line).
+ */
+const PLACEMENT = (() => {
+	const raw = envString("JUDGE_ROUTER_PLACEMENT", "below");
+	return raw === "above" || raw === "status" ? raw : "below";
+})();
+
+const STATUS_KEY = "judge-router";
+const WIDGET_KEY = "judge-router";
+
+/** Assemble the line's text; `undefined` when there is nothing to show. */
+function renderStatusText(ctx: ExtensionContext): string | undefined {
+	const parts: string[] = [];
+	if (routed) parts.push(routed);
+
+	const readings: string[] = [];
+	for (const provider of [...health.keys()].sort()) {
+		const entry = health.get(provider)!;
+		readings.push(
+			formatReading(provider, entry.outcome, {
+				compact: STATUS_MODE === "compact",
+				barWidth: BAR_WIDTH,
+			}),
+		);
+	}
+	if (readings.length > 0) parts.push(readings.join(" · "));
+
+	if (STATUS_MODE === "full") {
+		const split = formatCostSplit(aggregate(sessionSamples(ctx), byProvider));
+		if (split) parts.push(`sess ${split}`);
+	}
+
+	return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/**
+ * Publish the line: what we routed to, the provider readings, and the session
+ * cost split. This is the piece a virtual model hides from provider-based
+ * indicator extensions, which read the selected model's provider and see only
+ * `judge`. The session split matters because the providers do not bill the same
+ * way: one is a prepaid dollar balance, the other a plan in quota percentages.
  */
 function refreshStatus(ctx: ExtensionContext): void {
-	if (STATUS_MODE === "off") return;
 	try {
-		const parts: string[] = [];
-		if (routed) parts.push(routed);
-
-		const readings: string[] = [];
-		for (const provider of [...health.keys()].sort()) {
-			const entry = health.get(provider)!;
-			readings.push(
-				formatReading(provider, entry.outcome, {
-					compact: STATUS_MODE === "compact",
-					barWidth: BAR_WIDTH,
-				}),
-			);
-		}
-		if (readings.length > 0) parts.push(readings.join(" · "));
-
-		if (STATUS_MODE === "full") {
-			const split = formatCostSplit(aggregate(sessionSamples(ctx), byProvider));
-			if (split) parts.push(`sess ${split}`);
-		}
-
-		const text = parts.length > 0 ? parts.join(" · ") : undefined;
-		ctx.ui.setStatus("judge-router", text);
+		const text = STATUS_MODE === "off" ? undefined : renderStatusText(ctx);
 		dumpStatus(text);
+		if (ctx.hasUI === false) return;
+
+		if (PLACEMENT === "status") {
+			ctx.ui.setWidget(WIDGET_KEY, undefined);
+			ctx.ui.setStatus(STATUS_KEY, text);
+			return;
+		}
+
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		ctx.ui.setWidget(
+			WIDGET_KEY,
+			text === undefined ? undefined : [ctx.ui.theme.fg("dim", text)],
+			{ placement: PLACEMENT === "above" ? "aboveEditor" : "belowEditor" },
+		);
 	} catch {
 		// No UI (headless, RPC): status is cosmetic, never fatal.
 	}
