@@ -33,6 +33,7 @@ import type {
 	ModelRoute,
 	ModelRouteRequest,
 } from "@earendil-works/pi-coding-agent";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	DEFAULT_PROBE_OPTIONS,
@@ -158,7 +159,6 @@ function refreshStatus(ctx: ExtensionContext): void {
 
 		const readings: string[] = [];
 		for (const [provider, entry] of health) {
-			if (Date.now() - entry.at >= PROBE_TTL_MS) continue;
 			readings.push(
 				STATUS_MODE === "compact"
 					? compactReading(provider, entry.outcome)
@@ -172,9 +172,45 @@ function refreshStatus(ctx: ExtensionContext): void {
 			if (split) parts.push(`sess ${split}`);
 		}
 
-		ctx.ui.setStatus("judge-router", parts.length > 0 ? parts.join(" · ") : undefined);
+		const text = parts.length > 0 ? parts.join(" · ") : undefined;
+		ctx.ui.setStatus("judge-router", text);
+		dumpStatus(text);
 	} catch {
 		// No UI (headless, RPC): status is cosmetic, never fatal.
+	}
+}
+
+/**
+ * Debug escape hatch: `JUDGE_ROUTER_STATUS_FILE` appends every rendered status
+ * line to a file. The status is invisible in headless runs and easy to
+ * misinterpret in a terminal, so being able to read what was actually computed
+ * is worth five lines.
+ */
+function dumpStatus(text: string | undefined): void {
+	const path = process.env["JUDGE_ROUTER_STATUS_FILE"];
+	if (!path) return;
+	try {
+		appendFileSync(path, `${new Date().toISOString()} ${text ?? "(empty)"}\n`);
+	} catch {
+		// Best effort: a debug file never breaks a session.
+	}
+}
+
+/**
+ * Refresh the readings for display, not for routing.
+ *
+ * Routing probes on demand, which means the footer would only ever show the
+ * provider the router just used — and it would go blank as soon as the cache
+ * entry aged out. Monitoring has to be independent of routing: probe every
+ * known provider whose reading is stale, in the background, so a turn never
+ * waits on it.
+ */
+function refreshReadings(ctx: ExtensionContext): void {
+	refreshStatus(ctx);
+	for (const provider of PROBED_PROVIDERS) {
+		const entry = health.get(provider);
+		if (entry !== undefined && Date.now() - entry.at < PROBE_TTL_MS) continue;
+		void providerUsable(ctx, provider);
 	}
 }
 
@@ -426,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 					? `${model.provider}/${model.id}`
 					: `→ ${model.provider}/${model.id}`;
 		}
-		refreshStatus(ctx);
+		refreshReadings(ctx);
 	});
 
 	// Keep the footer truthful while the router is idle. Selecting a physical
@@ -440,7 +476,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		refreshStatus(ctx);
+		refreshReadings(ctx);
 	});
 
 	pi.registerVirtualModel<RouterState>({

@@ -81,6 +81,7 @@ Everything is environment variables, all optional:
 | `JUDGE_ROUTER_PROBE_TTL_MS` | `60000` | how long a probe result is trusted |
 | `JUDGE_ROUTER_PROBE_TIMEOUT_MS` | `3000` | HTTP timeout for a probe |
 | `JUDGE_ROUTER_STATUS` | `full` | footer verbosity: `full`, `compact`, `off` |
+| `JUDGE_ROUTER_STATUS_FILE` | unset | debug: append every rendered status line to this file |
 | `JUDGE_ROUTER_USAGE_FILE` | `<agent dir>/judge-router-usage.json` | where the judge-usage counter is stored |
 
 Model references are `provider/id`, split on the **first** slash only, so ids such as
@@ -147,6 +148,14 @@ when a physical model is selected), so the plugin never looks dead before the fi
 refreshes on every dispatch, every probe and every `turn_end`, and it follows a manual switch to a
 physical model — so it stays accurate (and keeps tracking session cost) even when the router is not
 in play, instead of freezing on the last dispatched model.
+
+Readings refresh in the background on every turn, independently of routing. That separation is not
+cosmetic: routing probes only the provider it is about to use, so a display tied to routing would
+show one provider and blank out as soon as that cache entry aged. The provider you are routing to is
+not necessarily the one you want to watch.
+
+`JUDGE_ROUTER_STATUS_FILE=/tmp/status.log` appends every rendered line, which is how the footer was
+debugged: the status is invisible in headless runs and easy to misread in a terminal.
 
 **`/usage-breakdown`**, a per-model and per-provider table for the current session:
 
