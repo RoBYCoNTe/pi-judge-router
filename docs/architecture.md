@@ -1,23 +1,22 @@
 # Architecture and design notes
 
 This document records *why* the router looks the way it does. The measurements below come from a real
-workload: 187 sessions, 14.5B tokens, $354 of model spend, analysed before any of this was written.
+workload (187 sessions, 14.5B tokens), analysed before any of this was written.
 
 ## 1. Where the money was
 
-| Model | Spend | Share |
-|---|---|---|
-| `openai/gpt-5.5` | $86.17 | 24% |
-| `deepseek/deepseek-flash` | $60.32 | 17% |
-| `zai/glm-5.3-flash` | $48.31 | 14% |
-| `openai/gpt-5.6-sol` | $34.57 | 10% |
-| other | $124.60 | 35% |
+| Model | Share of spend |
+|---|---|
+| `openai/gpt-5.5` | 24% |
+| `deepseek/deepseek-flash` | 17% |
+| `zai/glm-5.3-flash` | 14% |
+| `openai/gpt-5.6-sol` | 10% |
+| other | 35% |
 
 Premium tiers (`gpt-5.5`, `gpt-5.6-sol`, `claude-opus-5`, `claude-sonnet-5`) accounted for roughly
-**37% of the bill**. The cheap tiers were already efficient: `zai` showed an effective rate of about
-$0.028/M tokens against a $0.15/M list input price, i.e. prompt caching was working. The problem was
-never the price per token — it was choosing the expensive tier by hand and then staying on it for the
-whole session.
+**37% of the bill**. The cheap tiers were already efficient: `zai` was billed almost entirely at
+cache-read rates, i.e. prompt caching was already working. The problem was never the price per
+token — it was choosing the expensive tier by hand and then staying on it for the whole session.
 
 That is what the router changes: the expensive tier is reached only when a judge says the work needs
 it, and never for the mechanical part of a session.

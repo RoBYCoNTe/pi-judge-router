@@ -120,7 +120,7 @@ function readNumber(value: unknown): number | null {
  *
  * ```json
  * { "is_available": true,
- *   "balance_infos": [{ "currency": "USD", "total_balance": "46.57" }] }
+ *   "balance_infos": [{ "currency": "USD", "total_balance": "12.34" }] }
  * ```
  *
  * `total_balance` is a string, and `balance_infos` may hold several currencies.

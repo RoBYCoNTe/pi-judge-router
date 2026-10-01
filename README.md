@@ -20,7 +20,7 @@ Defaults target `zai/glm-5.3-flash`, `zai/glm-5.3` and `deepseek/deepseek-flash`
 
 ## Why this exists
 
-Three observations, all measured on a real workload (187 sessions, $354 of model spend) rather than
+Three observations, all measured on a real workload (187 sessions, 14.5B tokens) rather than
 assumed:
 
 1. **Premium models were 37% of the bill and mostly avoidable.** Most turns are ordinary work; the
