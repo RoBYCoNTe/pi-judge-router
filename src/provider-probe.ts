@@ -41,6 +41,14 @@ export const DEFAULT_PROBE_OPTIONS: ProbeOptions = {
 	timeoutMs: 3_000,
 };
 
+/** Result of a probe: the verdict plus a short string for the footer. */
+export interface ProbeOutcome {
+	/** `true` = use the primary provider. Unknown states also answer `true`. */
+	usable: boolean;
+	/** Compact human detail, e.g. `USD 42.00` or `tokens 32%/6%`. */
+	detail: string;
+}
+
 export const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 export const ZAI_QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 
@@ -125,18 +133,21 @@ function readNumber(value: unknown): number | null {
  *
  * `total_balance` is a string, and `balance_infos` may hold several currencies.
  */
-export function deepseekHasCredit(
+export function describeDeepseek(
 	payload: unknown,
 	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
-): boolean {
+): ProbeOutcome {
 	const root = asRecord(payload);
-	if (!root) return true;
-	if (root.is_available === false) return false;
+	if (!root) return { usable: true, detail: "unreadable" };
 
 	const infos = (Array.isArray(root.balance_infos) ? root.balance_infos : [])
 		.map(asRecord)
 		.filter((entry): entry is Record<string, unknown> => entry !== null);
-	if (infos.length === 0) return true;
+	if (infos.length === 0) {
+		return root.is_available === false
+			? { usable: false, detail: "unavailable" }
+			: { usable: true, detail: "no balance" };
+	}
 
 	const usd = infos.find(
 		(entry) =>
@@ -145,9 +156,22 @@ export function deepseekHasCredit(
 	);
 	const chosen = usd ?? infos[0]!;
 	const balance = readNumber(chosen.total_balance ?? chosen.totalBalance);
-	if (balance === null) return true;
+	const currency = typeof chosen.currency === "string"
+		? chosen.currency.toUpperCase()
+		: "USD";
 
-	return balance >= options.minBalanceUsd;
+	if (balance === null) return { usable: true, detail: `${currency} ?` };
+	const usable =
+		root.is_available !== false && balance >= options.minBalanceUsd;
+	return { usable, detail: `${currency} ${balance.toFixed(2)}` };
+}
+
+/** Boolean view of {@link describeDeepseek}. */
+export function deepseekHasCredit(
+	payload: unknown,
+	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
+): boolean {
+	return describeDeepseek(payload, options).usable;
 }
 
 /**
@@ -164,27 +188,38 @@ export function deepseekHasCredit(
  * Two window kinds are reported. `TIME_LIMIT` counts requests and carries
  * `remaining`; `TOKENS_LIMIT` is the real budget. Only token windows decide.
  */
-export function zaiHasQuota(
+export function describeZai(
 	payload: unknown,
 	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
-): boolean {
+): ProbeOutcome {
 	const root = asRecord(payload);
-	if (!root) return true;
+	if (!root) return { usable: true, detail: "unreadable" };
 	const data = asRecord(root.data) ?? root;
 
 	const limits = (Array.isArray(data.limits) ? data.limits : [])
 		.map(asRecord)
 		.filter((entry): entry is Record<string, unknown> => entry !== null);
-	if (limits.length === 0) return true;
+	if (limits.length === 0) return { usable: true, detail: "no limits" };
 
 	const tokenLimits = limits.filter((entry) => entry.type === "TOKENS_LIMIT");
-	if (tokenLimits.length === 0) return true;
+	if (tokenLimits.length === 0) return { usable: true, detail: "no token windows" };
 
-	return tokenLimits.every((entry) => {
-		const percentage = readNumber(entry.percentage);
-		if (percentage === null) return true;
-		return percentage < options.maxQuotaPercent;
-	});
+	const percentages = tokenLimits
+		.map((entry) => readNumber(entry.percentage))
+		.filter((value): value is number => value !== null);
+	if (percentages.length === 0) return { usable: true, detail: "tokens ?" };
+
+	const usable = percentages.every((value) => value < options.maxQuotaPercent);
+	const detail = `tokens ${percentages.map((value) => `${Math.round(value)}%`).join("/")}`;
+	return { usable, detail };
+}
+
+/** Boolean view of {@link describeZai}. */
+export function zaiHasQuota(
+	payload: unknown,
+	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
+): boolean {
+	return describeZai(payload, options).usable;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,14 +248,14 @@ export async function probeProvider(
 	apiKey: string,
 	signal: AbortSignal,
 	options: ProbeOptions = DEFAULT_PROBE_OPTIONS,
-): Promise<boolean> {
+): Promise<ProbeOutcome> {
 	if (provider === "deepseek") {
-		return deepseekHasCredit(await fetchJson(DEEPSEEK_BALANCE_URL, apiKey, signal), options);
+		return describeDeepseek(await fetchJson(DEEPSEEK_BALANCE_URL, apiKey, signal), options);
 	}
 	if (provider === "zai") {
-		return zaiHasQuota(await fetchJson(ZAI_QUOTA_URL, apiKey, signal), options);
+		return describeZai(await fetchJson(ZAI_QUOTA_URL, apiKey, signal), options);
 	}
-	return true;
+	return { usable: true, detail: "not probed" };
 }
 
 /** AbortSignal that fires on timeout, or on the caller's abort, whichever is first. */

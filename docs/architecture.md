@@ -135,7 +135,36 @@ forced, and read the dispatched model from the JSON event stream. The four cases
 
 Running the same four by hand after any change is the cheapest possible regression check.
 
-## 8. Known limits
+## 8. Observability: why provider indicators go blind
+
+Every provider-indicator extension has the same shape: read the **selected** model's provider,
+map it to a vendor, poll that vendor's quota endpoint, draw it in the footer. That works because the
+selected model *is* the serving model.
+
+A virtual model breaks that assumption. The selected provider is `judge`, which maps to no vendor, so
+the automatic indicators show nothing. It is not a bug in those extensions — it is a category the
+virtual-model layer introduced, and the mapping simply has no entry for it. Manual paths survive:
+`pi-usage-bars` still lists every provider in its `/usage` panel and each can be opened by hand.
+
+The router fills the automatic path itself, because it is the only component that knows both halves:
+
+- **what it dispatched** — after `withFallback` resolves, the target is provider-qualified
+  (`deepseek/deepseek-flash`), so a model id that exists on several providers is never ambiguous;
+- **what it probed** — the probe now returns `{ usable, detail }` instead of a boolean, where
+  `detail` is already the human string (`USD 42.00`, `tokens 32%/6%`). A boolean would have thrown
+  away the number at exactly the point it was read.
+
+Both go into a footer status via `ctx.ui.setStatus`, refreshed on every dispatch and every probe
+outcome. That keeps the useful part of a usage bar — the reading — without a second polling path.
+
+Usage accounting is separate and deliberately narrower. The router records the token counts of its
+own judge calls from `ClassifierResult.usage`, into a persisted per-day store. It cannot see calls
+made by other extensions, because those use their own HTTP clients; and it cannot report credits,
+because TypeSafe's public surface is just `POST /v1/systemone` and `GET /v1/models`. Probes of a
+dozen plausible account/usage paths all return 404. The honest answer for "how many credits are
+left" is the vendor console; the honest answer for "what did routing cost" is this store.
+
+## 9. Known limits
 
 - **No chain.** One substitute per primary. Chaining is easy to add but multiplies the states to reason
   about for a case (both providers down) that has not been observed.

@@ -80,6 +80,7 @@ Everything is environment variables, all optional:
 | `JUDGE_ROUTER_MAX_QUOTA_PERCENT` | `95` | z.ai token quota at or above which it counts as exhausted |
 | `JUDGE_ROUTER_PROBE_TTL_MS` | `60000` | how long a probe result is trusted |
 | `JUDGE_ROUTER_PROBE_TIMEOUT_MS` | `3000` | HTTP timeout for a probe |
+| `JUDGE_ROUTER_USAGE_FILE` | `<agent dir>/judge-router-usage.json` | where the judge-usage counter is stored |
 
 Model references are `provider/id`, split on the **first** slash only, so ids such as
 `accounts/fireworks/models/glm-5p3-flash` work.
@@ -116,22 +117,55 @@ degrade the router to "no fallback", never to a broken agent. Probe results are 
 `JUDGE_ROUTER_PROBE_TTL_MS` and concurrent probes for the same provider are deduplicated, so the
 steady-state cost is one HTTP request per provider per minute.
 
+## Visibility
+
+A virtual model is invisible to provider-based indicator extensions, and for a good reason: they
+read the **selected** model's provider to decide what to poll. Selected here is `judge`, which matches
+no vendor, so their automatic indicators go quiet. (Manual paths still work — the `/usage` panel of
+`pi-usage-bars` lists every provider and can be opened for any of them.)
+
+The router closes that gap in two places:
+
+**A footer status line**, updated on every dispatch and every probe:
+
+```
+→ deepseek/deepseek-flash · zai tokens 32%/6% · deepseek USD 42.00
+```
+
+It shows the provider-qualified model actually dispatched (so `glm-5.3-flash` is never ambiguous
+between z.ai and Fireworks) and the last reading of each probed provider.
+
+**`/jev-usage`**, a command that reports the judge calls this router made:
+
+```
+since 2026-10-01: 42 calls, in 18.2k, out 1.4k · today: 3 calls, in 1.1k, out 90
+file: ~/.pi/agent/judge-router-usage.json
+```
+
+The counter is persisted and accumulates across sessions. Scope is deliberate and worth stating:
+it counts **only the calls this router makes**. Calls made by other extensions (a gate judging every
+tool call, for instance) go through their own HTTP clients and are invisible here. TypeSafe's API
+exposes no balance or aggregated usage endpoint — `POST /v1/systemone` and `GET /v1/models` are the
+whole surface — so the authoritative credit balance stays in the vendor console.
+
 ## Layout
 
 ```
-src/judge-router.ts      the extension: virtual model, routing rules, probe cache, pi wiring
-src/provider-probe.ts    endpoints, payload parsers and the probe itself — no pi imports
+src/judge-router.ts        the extension: virtual model, routing rules, probe cache, usage, pi wiring
+src/provider-probe.ts      endpoints, payload parsers and the probe itself — no pi imports
+src/usage-store.ts         persistent judge-usage counter — no pi imports
 tests/provider-probe.test.ts
-docs/architecture.md     the decisions, the measurements and the trade-offs
+tests/usage-store.test.ts
+docs/architecture.md       the decisions, the measurements and the trade-offs
 ```
 
-`src/provider-probe.ts` has no dependency on pi, so it is unit-testable in isolation and reusable
-from any other extension.
+Both `src/provider-probe.ts` and `src/usage-store.ts` have no dependency on pi, so they are
+unit-testable in isolation and reusable from any other extension.
 
 ## Development
 
 ```bash
-bun test          # 18 unit tests, no network, no credentials
+bun test          # 32 unit tests, no network, no credentials
 ```
 
 The extension is loaded in place by `pi install /path/to/pi-judge-router`, so editing the repository

@@ -25,12 +25,15 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 	ModelRoute,
 	ModelRouteRequest,
 } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 import {
 	DEFAULT_PROBE_OPTIONS,
 	FALLBACKS,
@@ -40,8 +43,16 @@ import {
 	probeSignal,
 	targetKey,
 	type ProbeOptions,
+	type ProbeOutcome,
 	type Target,
 } from "./provider-probe.ts";
+import {
+	formatUsage,
+	loadStore,
+	recordUsage,
+	saveStore,
+	type UsageStore,
+} from "./usage-store.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -90,32 +101,68 @@ const EDIT_TOOLS = new Set(["edit", "write"]);
 // Module state: the probe cache lives as long as the pi process.
 // ---------------------------------------------------------------------------
 
-const health = new Map<string, { usable: boolean; at: number }>();
-const inflight = new Map<string, Promise<boolean>>();
+const health = new Map<string, { outcome: ProbeOutcome; at: number }>();
+const inflight = new Map<string, Promise<ProbeOutcome>>();
 const notified = new Map<string, boolean>();
 
+/** Last model the router dispatched, shown in the footer. */
+let routed = "";
+
+function today(): string {
+	return new Date().toISOString().slice(0, 10);
+}
+
+function usageFile(): string {
+	return envString(
+		"JUDGE_ROUTER_USAGE_FILE",
+		join(getAgentDir(), "judge-router-usage.json"),
+	);
+}
+
+let usageStore: UsageStore | undefined;
+
 /**
- * `true` means "the provider has credit/quota", and also "we could not find
- * out". Probe failures fail open so a changed endpoint degrades to no-fallback
- * rather than to a broken agent.
+ * Footer status: what we routed to, plus the cached provider readings. This is
+ * the piece a virtual model hides from provider-based indicator extensions,
+ * which read the selected model's provider and see only `judge`.
+ */
+function refreshStatus(ctx: ExtensionContext): void {
+	try {
+		const parts: string[] = [];
+		if (routed) parts.push(routed);
+		for (const [provider, entry] of health) {
+			if (Date.now() - entry.at < PROBE_TTL_MS) {
+				parts.push(`${provider} ${entry.outcome.detail}`);
+			}
+		}
+		ctx.ui.setStatus("judge-router", parts.length > 0 ? parts.join(" · ") : undefined);
+	} catch {
+		// No UI (headless, RPC): status is cosmetic, never fatal.
+	}
+}
+
+/**
+ * `usable: true` means "the provider has credit/quota", and also "we could not
+ * find out". Probe failures fail open so a changed endpoint degrades to
+ * no-fallback rather than to a broken agent.
  */
 async function providerUsable(
 	ctx: ExtensionContext,
 	provider: string,
 	requestSignal?: AbortSignal,
-): Promise<boolean> {
+): Promise<ProbeOutcome> {
 	const cached = health.get(provider);
-	if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.usable;
+	if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.outcome;
 
 	const running = inflight.get(provider);
 	if (running) return running;
 
-	const check = (async (): Promise<boolean> => {
-		let usable = true;
+	const check = (async (): Promise<ProbeOutcome> => {
+		let outcome: ProbeOutcome = { usable: true, detail: "unknown" };
 		try {
 			const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
 			if (apiKey) {
-				usable = await probeProvider(
+				outcome = await probeProvider(
 					provider,
 					apiKey,
 					probeSignal(PROBE_OPTIONS.timeoutMs, requestSignal),
@@ -123,16 +170,30 @@ async function providerUsable(
 				);
 			}
 		} catch {
-			usable = true;
+			outcome = { usable: true, detail: "probe failed" };
 		}
-		health.set(provider, { usable, at: Date.now() });
-		return usable;
+		health.set(provider, { outcome, at: Date.now() });
+		refreshStatus(ctx);
+		return outcome;
 	})().finally(() => {
 		inflight.delete(provider);
 	});
 
 	inflight.set(provider, check);
 	return check;
+}
+
+/** Record one judge call. Accounting must never break routing. */
+function recordJudgeUsage(usage: { input?: number; output?: number } | undefined): void {
+	if (!usage) return;
+	try {
+		const day = today();
+		if (!usageStore) usageStore = loadStore(usageFile(), day);
+		recordUsage(usageStore, { inputTokens: usage.input, outputTokens: usage.output }, day);
+		saveStore(usageFile(), usageStore);
+	} catch {
+		// ignore
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +220,7 @@ async function withFallback(
 	const substitute = FALLBACKS[targetKey(target)];
 	if (!substitute) return target;
 
-	if (await providerUsable(ctx, target.provider, request.signal)) {
+	if ((await providerUsable(ctx, target.provider, request.signal)).usable) {
 		notified.set(target.provider, false);
 		return target;
 	}
@@ -196,6 +257,8 @@ async function routeTo(
 	if (!model) {
 		throw new Error(`judge/auto: ${targetKey(resolved)} is not in the model catalog`);
 	}
+	routed = `→ ${targetKey(resolved)}`;
+	refreshStatus(ctx);
 	return { model, thinkingLevel, state };
 }
 
@@ -251,6 +314,8 @@ async function choosePlanningModel(
 			},
 			{ signal: request.signal },
 		);
+
+		recordJudgeUsage(result.usage);
 
 		const answer =
 			result.stopReason === "stop" ? result.answers.complexity : undefined;
@@ -341,6 +406,22 @@ export default function (pi: ExtensionAPI) {
 				state.phase === "implementation"
 					? IMPLEMENT_THINKING
 					: request.thinkingLevel,
+			);
+		},
+	});
+
+	pi.registerCommand("jev-usage", {
+		description: "Show Jev judge usage tracked by judge-router",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			const day = today();
+			const current = usageStore ?? loadStore(usageFile(), day);
+			ctx.ui.notify(
+				[
+					formatUsage(current, day),
+					`file: ${usageFile()}`,
+					"counts only judge-router calls; gate and jev_ask calls come from other extensions",
+				].join("\n"),
+				"info",
 			);
 		},
 	});

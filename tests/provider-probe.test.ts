@@ -11,6 +11,8 @@ import { describe, expect, test } from "bun:test";
 import {
 	DEFAULT_PROBE_OPTIONS,
 	deepseekHasCredit,
+	describeDeepseek,
+	describeZai,
 	parseTarget,
 	targetKey,
 	zaiHasQuota,
@@ -133,6 +135,28 @@ describe("deepseekHasCredit", () => {
 		expect(deepseekHasCredit(null)).toBe(true);
 		expect(deepseekHasCredit("<html>bad gateway</html>")).toBe(true);
 		expect(deepseekHasCredit({ balance_infos: [{ currency: "USD" }] })).toBe(true);
+	});
+});
+
+describe("probe details (footer strings)", () => {
+	test("deepseek reports the balance it read", () => {
+		expect(describeDeepseek(DEEPSEEK)).toEqual({ usable: true, detail: "USD 42.00" });
+	});
+
+	test("deepseek still reports the number when it is unusable", () => {
+		expect(describeDeepseek({ ...DEEPSEEK, is_available: false })).toEqual({
+			usable: false,
+			detail: "USD 42.00",
+		});
+	});
+
+	test("zai reports every token window", () => {
+		expect(describeZai(ZAI)).toEqual({ usable: true, detail: "tokens 32%/6%" });
+	});
+
+	test("unreadable payloads say so and stay usable", () => {
+		expect(describeDeepseek(null)).toEqual({ usable: true, detail: "unreadable" });
+		expect(describeZai(null)).toEqual({ usable: true, detail: "unreadable" });
 	});
 });
 
