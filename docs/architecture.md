@@ -178,6 +178,11 @@ It now returns structured readings — quota windows with percentages and reset 
 its currency — and the formatting lives in a separate module. A boolean would have thrown the number
 away exactly where it was read, and a detail string would have locked the display into the parser.
 
+A last detail that only shows up once the router can be bypassed: selecting a physical model by hand
+stops `route()` from running, so a status line updated only from routing decisions would freeze on
+the last dispatched model. The line therefore also refreshes on `turn_end` and follows `model_select`.
+Cost tracking has to survive being switched off, otherwise it only reports the happy path.
+
 ## 9. Known limits
 
 - **No chain.** One substitute per primary. Chaining is easy to add but multiplies the states to reason

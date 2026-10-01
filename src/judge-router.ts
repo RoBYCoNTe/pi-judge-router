@@ -414,6 +414,20 @@ async function choosePlanningModel(
 }
 
 export default function (pi: ExtensionAPI) {
+	// Keep the footer truthful while the router is idle. Selecting a physical
+	// model means route() stops running, so without these two hooks the line
+	// would freeze on the last dispatched model and on a stale cost split.
+	pi.on("model_select", async (event, ctx) => {
+		if (event.model.provider !== "judge") {
+			routed = `→ ${event.model.provider}/${event.model.id}`;
+		}
+		refreshStatus(ctx);
+	});
+
+	pi.on("turn_end", async (_event, ctx) => {
+		refreshStatus(ctx);
+	});
+
 	pi.registerVirtualModel<RouterState>({
 		provider: "judge",
 		id: "auto",

@@ -142,6 +142,10 @@ The router closes that gap in three places.
 
 `JUDGE_ROUTER_STATUS=compact` drops the bars and the split; `off` disables the line entirely.
 
+The line refreshes on every dispatch, every probe and every `turn_end`, and it follows a manual
+switch to a physical model — so it stays accurate (and keeps tracking session cost) even when the
+router is not in play, instead of freezing on the last dispatched model.
+
 **`/usage-breakdown`**, a per-model and per-provider table for the current session:
 
 ```
