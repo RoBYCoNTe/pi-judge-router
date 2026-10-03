@@ -105,6 +105,47 @@ substitute is slightly cheaper than the primary), so a failover is a cache miss,
 
 Adding a provider means adding an entry, a parser, and the provider id to `PROBED_PROVIDERS`.
 
+## Roles and session overrides
+
+The router picks a model per request from four roles:
+
+| Role | Environment variable | Default | Governs |
+|---|---|---|---|
+| `judge` | `JUDGE_ROUTER_JUDGE` | `typesafe/jev-latest` | the classifier that rates task complexity |
+| `cheap` | `JUDGE_ROUTER_CHEAP` | `zai/glm-5.3-flash` | planning for ordinary tasks |
+| `strong` | `JUDGE_ROUTER_STRONG` | `zai/glm-5.3` | planning for tasks the judge calls complex |
+| `exec` | `JUDGE_ROUTER_IMPLEMENT` | `deepseek/deepseek-flash` | implementation and compaction |
+
+Environment variables are the deployment-time configuration. When a single
+session needs something different, and restarting is not an option, use the
+command:
+
+```
+/judge-models                         show the four roles and where each value comes from
+/judge-models strong <provider/id>    set a session override
+/judge-models strong                  pick from the available models, with the same
+                                      fuzzy matching as /model
+/judge-models reset strong            drop one override
+/judge-models reset all               drop them all
+```
+
+An override wins over the environment, which wins over the default, and the
+status output says which of the three is in charge for each role. Nothing is
+written to disk: the override lives as long as the session.
+
+Two behaviours are worth knowing before you use it.
+
+**It applies from the next request, including inside a running session.** The
+session state stores the *role*, not the resolved model, so changing a role does
+not have to wait for a new session. That is also why the state carries a legacy
+`model` field: sessions written before roles existed keep working, and get
+repaired to the `exec` role once implementation starts.
+
+**Pointing a chat role at a provider without a probe is allowed, and the command
+says so.** Fireworks is the usual case: it has no quota endpoint, so while a role
+points there it gets no reading and no fallback. The judge role is excluded from
+that warning, because a classifier is called explicitly and is never substituted.
+
 ## How the probe behaves
 
 `true` means "use the primary". So does *anything unexpected*:
@@ -192,12 +233,14 @@ whole surface — so the authoritative credit balance stays in the vendor consol
 ## Layout
 
 ```
-src/judge-router.ts        the extension: virtual model, routing rules, probe cache, usage, pi wiring
+src/judge-router.ts        the extension: virtual model, roles, routing, probe cache, pi wiring
+src/model-overrides.ts     session role overrides and the /judge-models command — no pi imports
 src/provider-probe.ts      endpoints, payload parsers and the probe itself — no pi imports
 src/format.ts              bars, token counts, money, countdowns — no pi imports
 src/session-report.ts      session aggregation and the report table — no pi imports
 src/usage-store.ts         persistent judge-usage counter — no pi imports
 tests/provider-probe.test.ts
+tests/model-overrides.test.ts
 tests/format.test.ts
 tests/session-report.test.ts
 tests/usage-store.test.ts
@@ -210,7 +253,7 @@ isolation and reusable from any other extension.
 ## Development
 
 ```bash
-bun test          # 59 unit tests, no network, no credentials
+bun test          # 86 unit tests, no network, no credentials
 ```
 
 The extension is loaded in place by `pi install /path/to/pi-judge-router`, so editing the repository

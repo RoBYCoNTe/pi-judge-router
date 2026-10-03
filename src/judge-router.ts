@@ -26,7 +26,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { fuzzyFilter, truncateToWidth, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -59,6 +59,17 @@ import {
 	type UsageSample,
 } from "./session-report.ts";
 import {
+	RoleOverrides,
+	ROLES,
+	ROLE_HELP,
+	isRole,
+	modelSearchText,
+	runModelsCommand,
+	type ModelLookupResult,
+	type Role,
+	type RoleSetting,
+} from "./model-overrides.ts";
+import {
 	formatUsage,
 	loadStore,
 	recordUsage,
@@ -80,15 +91,76 @@ function envString(name: string, fallback: string): string {
 	return raw ? raw : fallback;
 }
 
-/** Model that judges the task. Any classifier model in pi's registry works. */
-const JUDGE = envString("JUDGE_ROUTER_JUDGE", "typesafe/jev-latest");
+function envSetting(role: Role, name: string, fallback: string): RoleSetting {
+	const raw = process.env[name]?.trim();
+	return raw ? { role, value: raw, source: "env" } : { role, value: fallback, source: "default" };
+}
 
-/** The three roles. `provider/id`, ids may contain slashes. */
-const CHEAP = parseTarget(envString("JUDGE_ROUTER_CHEAP", "zai/glm-5.3-flash"))!;
-const STRONG = parseTarget(envString("JUDGE_ROUTER_STRONG", "zai/glm-5.3"))!;
-const IMPLEMENT = parseTarget(
-	envString("JUDGE_ROUTER_IMPLEMENT", "deepseek/deepseek-flash"),
-)!;
+/**
+ * The four roles, from the environment or the built-in default. Session
+ * overrides sit on top of these; see `overrides` below.
+ */
+const BASE_ROLES: readonly RoleSetting[] = [
+	envSetting("judge", "JUDGE_ROUTER_JUDGE", "typesafe/jev-latest"),
+	envSetting("cheap", "JUDGE_ROUTER_CHEAP", "zai/glm-5.3-flash"),
+	envSetting("strong", "JUDGE_ROUTER_STRONG", "zai/glm-5.3"),
+	envSetting("exec", "JUDGE_ROUTER_IMPLEMENT", "deepseek/deepseek-flash"),
+];
+
+/** Session-only overrides, set with `/judge-models`. */
+const overrides = new RoleOverrides();
+
+/** Resolve a role to a `provider/id` pair, honouring the session override. */
+function roleTarget(role: Role): Target {
+	const setting = overrides.effective(BASE_ROLES).find((entry) => entry.role === role);
+	const parsed = setting === undefined ? undefined : parseTarget(setting.value);
+	if (parsed === undefined) {
+		throw new Error(
+			`judge/auto: ${role} is set to "${setting?.value ?? ""}", which is not a provider/id reference`,
+		);
+	}
+	return parsed;
+}
+
+/**
+ * Whether a reference names something the role can actually use. The judge role
+ * needs a classifier; the other three need a chat model with working
+ * credentials, otherwise the override would only fail later at dispatch time.
+ */
+function acceptsModel(
+	ctx: ExtensionContext,
+	role: Role,
+	reference: string,
+): ModelLookupResult {
+	const target = parseTarget(reference);
+	if (target === undefined) {
+		return { ok: false, reason: `"${reference}" is not a provider/id reference` };
+	}
+
+	if (role === "judge") {
+		const classifier = ctx.modelRegistry.findOfType(
+			"classifier",
+			target.provider,
+			target.id,
+		);
+		return classifier === undefined
+			? { ok: false, reason: `${reference} is not a classifier model in the catalog` }
+			: { ok: true };
+	}
+
+	if (ctx.modelRegistry.find(target.provider, target.id) === undefined) {
+		return { ok: false, reason: `${reference} is not in the model catalog` };
+	}
+	const usable = ctx.modelRegistry
+		.getAvailable()
+		.some(
+			(candidate) =>
+				candidate.provider === target.provider && candidate.id === target.id,
+		);
+	return usable
+		? { ok: true }
+		: { ok: false, reason: `${reference} has no working credentials` };
+}
 
 /**
  * Probability of "complex" above which the strong model is used. Deliberately
@@ -128,6 +200,13 @@ const notified = new Map<string, boolean>();
 
 /** Last model the router dispatched, shown in the footer. */
 let routed = "";
+
+/**
+ * Latest context seen by any handler. `getArgumentCompletions` receives only
+ * the typed prefix, so the model list for the completion has to come from
+ * somewhere: this is that somewhere.
+ */
+let latestCtx: ExtensionContext | undefined;
 
 function today(): string {
 	return new Date().toISOString().slice(0, 10);
@@ -194,6 +273,7 @@ function renderStatusText(ctx: ExtensionContext): string | undefined {
  * way: one is a prepaid dollar balance, the other a plan in quota percentages.
  */
 function refreshStatus(ctx: ExtensionContext): void {
+	latestCtx = ctx;
 	try {
 		const text = STATUS_MODE === "off" ? undefined : renderStatusText(ctx);
 		dumpStatus(text);
@@ -283,7 +363,7 @@ async function providerUsable(
 	if (running) return running;
 
 	const check = (async (): Promise<ProbeOutcome> => {
-		let outcome: ProbeOutcome = { usable: true, detail: "unknown" };
+		let outcome: ProbeOutcome = { usable: true, note: "unknown" };
 		try {
 			const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
 			if (apiKey) {
@@ -295,7 +375,7 @@ async function providerUsable(
 				);
 			}
 		} catch {
-			outcome = { usable: true, detail: "probe failed" };
+			outcome = { usable: true, note: "probe failed" };
 		}
 		health.set(provider, { outcome, at: Date.now() });
 		refreshStatus(ctx);
@@ -327,9 +407,16 @@ function recordJudgeUsage(usage: { input?: number; output?: number } | undefined
 
 type ThinkingLevel = ModelRouteRequest<RouterState>["thinkingLevel"];
 
+/**
+ * Which role serves a phase. The role is what gets stored in the session state,
+ * not the resolved model, so a `/judge-models` override applies from the next
+ * request instead of waiting for a new session.
+ */
 interface RouterState {
 	phase: "planning" | "implementation";
-	model: Target;
+	role?: Role;
+	/** Written by versions before roles existed; still honoured on resume. */
+	model?: Target;
 }
 
 type RouterRequest = ModelRouteRequest<RouterState>;
@@ -406,20 +493,22 @@ function editedThisTurn(messages: readonly Message[]): boolean {
 }
 
 /**
- * Ask the judge how demanding the work is. Every failure path (no classifier,
- * transport error, unexpected answer) degrades to the cheap model: routing
- * must never be the reason a request fails.
+ * Ask the judge how demanding the work is, and return the role to plan with.
+ * Every failure path (no classifier, transport error, unexpected answer)
+ * degrades to the cheap role: routing must never fail a request.
  */
-async function choosePlanningModel(
+async function choosePlanningRole(
 	request: RouterRequest,
 	ctx: ExtensionContext,
-): Promise<Target> {
+): Promise<Role> {
 	try {
-		const reference = parseTarget(JUDGE);
-		const judge = reference
-			? ctx.modelRegistry.findOfType("classifier", reference.provider, reference.id)
-			: undefined;
-		if (!judge) return CHEAP;
+		const reference = roleTarget("judge");
+		const judge = ctx.modelRegistry.findOfType(
+			"classifier",
+			reference.provider,
+			reference.id,
+		);
+		if (!judge) return "cheap";
 
 		const result = await ctx.modelRegistry.classify(
 			judge,
@@ -444,21 +533,21 @@ async function choosePlanningModel(
 
 		const answer =
 			result.stopReason === "stop" ? result.answers.complexity : undefined;
-		if (answer?.type !== "choice") return CHEAP;
+		if (answer?.type !== "choice") return "cheap";
 
 		const pComplex = answer.probabilities?.complex ?? 0;
-		const pick = pComplex >= COMPLEX_THRESHOLD ? STRONG : CHEAP;
+		const role: Role = pComplex >= COMPLEX_THRESHOLD ? "strong" : "cheap";
 		ctx.ui.notify(
-			`judge/auto: planning on ${targetKey(pick)} (p_complex=${pComplex.toFixed(2)})`,
+			`judge/auto: planning with ${role}, ${targetKey(roleTarget(role))} (p_complex=${pComplex.toFixed(2)})`,
 			"info",
 		);
-		return pick;
+		return role;
 	} catch (error) {
 		ctx.ui.notify(
-			`judge/auto: judge unavailable, using ${targetKey(CHEAP)} (${error instanceof Error ? error.message : String(error)})`,
+			`judge/auto: judge unavailable, planning with cheap (${error instanceof Error ? error.message : String(error)})`,
 			"warning",
 		);
-		return CHEAP;
+		return "cheap";
 	}
 }
 
@@ -505,8 +594,8 @@ export default function (pi: ExtensionAPI) {
 				return routeTo(
 					request,
 					ctx,
-					IMPLEMENT,
-					{ phase: "implementation", model: IMPLEMENT },
+					roleTarget("exec"),
+					{ phase: "implementation", role: "exec" },
 					IMPLEMENT_THINKING,
 				);
 			}
@@ -521,33 +610,52 @@ export default function (pi: ExtensionAPI) {
 					request,
 					ctx,
 					failed,
-					request.state ?? { phase: "implementation", model: failed },
+					request.state ?? { phase: "implementation", role: "exec" },
 					request.failed.thinkingLevel ?? request.thinkingLevel,
 				);
 			}
 
 			const state = request.state;
+			const role = state?.role !== undefined && isRole(state.role) ? state.role : undefined;
 
-			// First request of the session: let the judge pick the planner.
-			if (!state) {
-				const model = await choosePlanningModel(request, ctx);
+			// A session written before roles existed: honour its model in the planning
+			// phase, and repair it to the exec role once implementation has started.
+			if (state !== undefined && role === undefined && state.model !== undefined) {
+				if (state.phase === "implementation") {
+					return routeTo(
+						request,
+						ctx,
+						roleTarget("exec"),
+						{ phase: "implementation", role: "exec" },
+						IMPLEMENT_THINKING,
+					);
+				}
+				return routeTo(request, ctx, state.model, state, request.thinkingLevel);
+			}
+
+			// First request of the session: let the judge pick the planning role.
+			if (state === undefined || role === undefined) {
+				const picked = await choosePlanningRole(request, ctx);
 				return routeTo(
 					request,
 					ctx,
-					model,
-					{ phase: "planning", model },
+					roleTarget(picked),
+					{ phase: "planning", role: picked },
 					request.thinkingLevel,
 				);
 			}
 
 			// The planner made its first edit: hand the rest to the implementer.
 			if (state.phase === "planning" && editedThisTurn(request.messages)) {
-				ctx.ui.notify(`judge/auto: -> ${targetKey(IMPLEMENT)} (implementation)`, "info");
+				ctx.ui.notify(
+					`judge/auto: -> ${targetKey(roleTarget("exec"))} (implementation)`,
+					"info",
+				);
 				return routeTo(
 					request,
 					ctx,
-					IMPLEMENT,
-					{ phase: "implementation", model: IMPLEMENT },
+					roleTarget("exec"),
+					{ phase: "implementation", role: "exec" },
 					IMPLEMENT_THINKING,
 				);
 			}
@@ -555,12 +663,73 @@ export default function (pi: ExtensionAPI) {
 			return routeTo(
 				request,
 				ctx,
-				state.model,
+				roleTarget(role),
 				state,
 				state.phase === "implementation"
 					? IMPLEMENT_THINKING
 					: request.thinkingLevel,
 			);
+		},
+	});
+
+	pi.registerCommand("judge-models", {
+		description: "Show or override the models judge/auto uses (session only)",
+		getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+			const parts = prefix.trimStart().split(/\s+/);
+			const completingRole = parts.length <= 1 && !/\s$/.test(prefix);
+
+			if (completingRole) {
+				const typed = parts[0] ?? "";
+				const roles = ROLES.filter((role) => role.startsWith(typed));
+				return roles.length > 0
+					? roles.map((role) => ({
+							value: role,
+							label: role,
+							description: ROLE_HELP[role],
+						}))
+					: null;
+			}
+
+			const first = parts[0]!;
+			if (first === "reset") {
+				const typed = parts[1] ?? "";
+				const targets = [...ROLES, "all"].filter((entry) => entry.startsWith(typed));
+				return targets.length > 0
+					? targets.map((entry) => ({ value: entry, label: entry }))
+					: null;
+			}
+			if (!isRole(first)) return null;
+
+			// Same list, same fuzzy matching and same search text as pi's /model, so
+			// the suggestions behave the way they do there.
+			const models = latestCtx?.modelRegistry.getAvailable() ?? [];
+			if (models.length === 0) return null;
+			const filtered = fuzzyFilter(
+				models.map((model) => ({
+					id: model.id,
+					provider: model.provider,
+					name: model.name,
+				})),
+				parts.slice(1).join(" "),
+				modelSearchText,
+			);
+			return filtered.length > 0
+				? filtered.map((model) => ({
+						value: `${model.provider}/${model.id}`,
+						label: model.id,
+						description: model.provider,
+					}))
+				: null;
+		},
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			latestCtx = ctx;
+			const result = runModelsCommand(args, {
+				base: BASE_ROLES,
+				overrides,
+				accepts: (role, reference) => acceptsModel(ctx, role, reference),
+			});
+			ctx.ui.notify(result.lines.join("\n"), "info");
+			refreshStatus(ctx);
 		},
 	});
 

@@ -114,6 +114,12 @@ that answered, with its existing cache, rather than re-deciding.
 The same reasoning puts compaction (`reason: "direct"`) on the implementation model: it is output-heavy
 work on a large context, which is exactly the profile the implementation tier is priced for.
 
+One consequence of that design is worth recording: because the switch is sticky, the session state has
+to store the **role** and not the resolved model. Storing the model would mean that a `/judge-models`
+override could not take effect until the next session, which is the opposite of what an override is
+for. Storing the role means every request re-resolves it, so a change lands on the very next request,
+and the legacy `model` field keeps older sessions working.
+
 ## 7. Testing strategy
 
 Two layers, because the two failure modes are different.
