@@ -123,8 +123,8 @@ command:
 ```
 /judge-models                         show the four roles and where each value comes from
 /judge-models strong <provider/id>    set a session override
-/judge-models strong                  pick from the available models, with the same
-                                      fuzzy matching as /model
+/judge-models strong                  pick from the available models, with the same fuzzy
+                                      matcher as /model but a more readable list
 /judge-models reset strong            drop one override
 /judge-models reset all               drop them all
 ```
@@ -145,6 +145,15 @@ repaired to the `exec` role once implementation starts.
 says so.** Fireworks is the usual case: it has no quota endpoint, so while a role
 points there it gets no reading and no fallback. The judge role is excluded from
 that warning, because a classifier is called explicitly and is never substituted.
+
+**The model list is built for path-shaped ids.** Fireworks ids look like
+`accounts/fireworks/models/glm-5p3-flash`, so showing the whole id makes every
+entry start with the same prefix and look identical; pi's own `/model` has that
+problem. Here the list shows the model name, the description keeps the folder
+(so `models/` and `routers/` are not confused), a name that appears on two
+providers gets its provider in the label, and the fuzzy matcher reads a text
+that starts with the model name rather than the path. Typing `glm-5p3-flash`
+finds the Fireworks entry first.
 
 ## How the probe behaves
 

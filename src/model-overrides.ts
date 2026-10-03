@@ -91,18 +91,80 @@ export function formatRoleSettings(settings: readonly RoleSetting[]): string {
 }
 
 /**
- * The text a model is matched against. Copied from pi's own `/model` matching
- * so the suggestions here behave the same way: the bare id is deliberately not
- * first, which keeps a query like `openrouter/openai/...` from ranking a proxy
- * provider above the real one.
+ * The distinguishing part of a model id. Provider ids like Fireworks are paths
+ * (`accounts/fireworks/models/glm-5p3-flash`), so the name a person recognises
+ * is the last segment, and every entry that starts with the same prefix looks
+ * identical if you display the whole id.
  */
-export function modelSearchText(item: {
+export function modelTail(id: string): string {
+	const slash = id.lastIndexOf("/");
+	return slash === -1 ? id : id.slice(slash + 1);
+}
+
+/** Everything before the model name: `accounts/fireworks/models`. */
+export function modelFolder(id: string): string {
+	const slash = id.lastIndexOf("/");
+	return slash === -1 ? "" : id.slice(0, slash);
+}
+
+export interface CompletionModel {
 	id: string;
 	provider: string;
 	name?: string;
-}): string {
+}
+
+export interface CompletionEntry {
+	/** What gets inserted on selection: the exact `provider/id`. */
+	value: string;
+	/** What the list shows. The model name, not the whole path. */
+	label: string;
+	/** Where it comes from, including the folder for path-shaped ids, so
+	 *  `models/` and `routers/` are not confused with each other. */
+	description: string;
+	/** The text the fuzzy matcher reads. */
+	search: string;
+}
+
+/**
+ * The text a model is matched against, with the model name first.
+ *
+ * This is where it deliberately differs from pi's own `/model` matching, which
+ * puts the full id first: with a path-shaped id, a query for the name alone
+ * then scores the model low and sits behind the prefix. Putting the tail first
+ * means typing `glm-5p3-flash` finds the Fireworks entry immediately.
+ */
+export function modelSearchText(item: CompletionModel): string {
 	const name = item.name ? ` ${item.name}` : "";
-	return `${item.id} ${item.provider} ${item.provider}/${item.id} ${item.provider} ${item.id}${name}`;
+	const tail = modelTail(item.id);
+	return `${tail} ${item.id} ${item.provider} ${item.provider}/${item.id} ${item.provider}${name}`;
+}
+
+/**
+ * Build the completion entries for a list of models.
+ *
+ * A model name that appears more than once (the same weights served by two
+ * providers) gets its provider in the label, so no two visible entries are ever
+ * indistinguishable.
+ */
+export function buildModelCompletions(
+	models: readonly CompletionModel[],
+): CompletionEntry[] {
+	const seen = new Map<string, number>();
+	for (const model of models) {
+		const tail = modelTail(model.id);
+		seen.set(tail, (seen.get(tail) ?? 0) + 1);
+	}
+
+	return models.map((model) => {
+		const tail = modelTail(model.id);
+		const folder = modelFolder(model.id);
+		return {
+			value: `${model.provider}/${model.id}`,
+			label: (seen.get(tail) ?? 0) > 1 ? `${model.provider}/${tail}` : tail,
+			description: folder === "" ? model.provider : `${model.provider}/${folder}`,
+			search: modelSearchText(model),
+		};
+	});
 }
 
 export interface ModelLookupResult {

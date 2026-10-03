@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	RoleOverrides,
 	ROLES,
+	buildModelCompletions,
 	formatRoleSettings,
 	isRole,
 	modelSearchText,
@@ -80,16 +81,64 @@ describe("formatRoleSettings", () => {
 });
 
 describe("modelSearchText", () => {
-	test("matches pi's own /model search text, id first, provider repeated", () => {
-		expect(modelSearchText({ id: "glm-5.3-flash", provider: "zai" })).toBe(
-			"glm-5.3-flash zai zai/glm-5.3-flash zai glm-5.3-flash",
+	test("puts the model name first, so a path-shaped id is found by its name", () => {
+		expect(modelSearchText({ id: "accounts/fireworks/models/glm-5p3-flash", provider: "fireworks" })).toBe(
+			"glm-5p3-flash accounts/fireworks/models/glm-5p3-flash fireworks fireworks/accounts/fireworks/models/glm-5p3-flash fireworks",
 		);
 	});
 
+	test("keeps the provider so `provider name` queries still match", () => {
+		expect(modelSearchText({ id: "glm-5.3-flash", provider: "zai" })).toContain("zai/glm-5.3-flash");
+	});
+
 	test("appends the display name when there is one", () => {
-		expect(modelSearchText({ id: "glm-5.3", provider: "zai", name: "GLM 5.3" })).toBe(
-			"glm-5.3 zai zai/glm-5.3 zai glm-5.3 GLM 5.3",
-		);
+		expect(modelSearchText({ id: "glm-5.3", provider: "zai", name: "GLM 5.3" })).toContain("zai GLM 5.3");
+	});
+});
+
+describe("buildModelCompletions", () => {
+	const fireworks = {
+		id: "accounts/fireworks/models/glm-5p3-flash",
+		provider: "fireworks",
+	};
+
+	test("shows the model name, not the shared path prefix", () => {
+		const [entry] = buildModelCompletions([fireworks]);
+		expect(entry!.label).toBe("glm-5p3-flash");
+		expect(entry!.value).toBe("fireworks/accounts/fireworks/models/glm-5p3-flash");
+	});
+
+	test("keeps the folder in the description, so models and routers differ", () => {
+		const [models, routers] = buildModelCompletions([
+			fireworks,
+			{ id: "accounts/fireworks/routers/glm-fast-latest", provider: "fireworks" },
+		]);
+		expect(models!.description).toBe("fireworks/accounts/fireworks/models");
+		expect(routers!.description).toBe("fireworks/accounts/fireworks/routers");
+	});
+
+	test("a flat id keeps the provider alone as its description", () => {
+		const [entry] = buildModelCompletions([{ id: "glm-5.3-flash", provider: "zai" }]);
+		expect(entry!.description).toBe("zai");
+	});
+
+	test("the same model name on two providers gets the provider in the label", () => {
+		const entries = buildModelCompletions([
+			{ id: "accounts/fireworks/models/glm-5p3-flash", provider: "fireworks" },
+			{ id: "glm-5p3-flash", provider: "openrouter" },
+		]);
+		expect(entries.map((entry) => entry.label)).toEqual([
+			"fireworks/glm-5p3-flash",
+			"openrouter/glm-5p3-flash",
+		]);
+	});
+
+	test("a unique name stays short", () => {
+		const entries = buildModelCompletions([
+			{ id: "glm-5.3-flash", provider: "zai" },
+			{ id: "accounts/fireworks/models/glm-5p3-flash", provider: "fireworks" },
+		]);
+		expect(entries.map((entry) => entry.label)).toEqual(["glm-5.3-flash", "glm-5p3-flash"]);
 	});
 });
 

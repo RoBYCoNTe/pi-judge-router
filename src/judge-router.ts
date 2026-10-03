@@ -62,8 +62,8 @@ import {
 	RoleOverrides,
 	ROLES,
 	ROLE_HELP,
+	buildModelCompletions,
 	isRole,
-	modelSearchText,
 	runModelsCommand,
 	type ModelLookupResult,
 	type Role,
@@ -700,25 +700,18 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (!isRole(first)) return null;
 
-			// Same list, same fuzzy matching and same search text as pi's /model, so
-			// the suggestions behave the way they do there.
+			// Same fuzzy matcher as pi's /model, but a different display and search
+			// text: path-shaped ids (Fireworks) are listed by model name, not by a
+			// prefix that every entry shares.
 			const models = latestCtx?.modelRegistry.getAvailable() ?? [];
 			if (models.length === 0) return null;
 			const filtered = fuzzyFilter(
-				models.map((model) => ({
-					id: model.id,
-					provider: model.provider,
-					name: model.name,
-				})),
+				buildModelCompletions(models),
 				parts.slice(1).join(" "),
-				modelSearchText,
+				(entry) => entry.search,
 			);
 			return filtered.length > 0
-				? filtered.map((model) => ({
-						value: `${model.provider}/${model.id}`,
-						label: model.id,
-						description: model.provider,
-					}))
+				? filtered.map(({ value, label, description }) => ({ value, label, description }))
 				: null;
 		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
