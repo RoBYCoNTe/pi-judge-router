@@ -65,6 +65,7 @@ import {
 	buildModelCompletions,
 	isRole,
 	runModelsCommand,
+	scopeCompletions,
 	type ModelLookupResult,
 	type Role,
 	type RoleSetting,
@@ -695,7 +696,10 @@ export default function (pi: ExtensionAPI) {
 				const typed = parts[1] ?? "";
 				const targets = [...ROLES, "all"].filter((entry) => entry.startsWith(typed));
 				return targets.length > 0
-					? targets.map((entry) => ({ value: entry, label: entry }))
+					? scopeCompletions(
+							"reset",
+							targets.map((entry) => ({ value: entry, label: entry })),
+						)
 					: null;
 			}
 			if (!isRole(first)) return null;
@@ -710,8 +714,13 @@ export default function (pi: ExtensionAPI) {
 				parts.slice(1).join(" "),
 				(entry) => entry.search,
 			);
+			// pi-tui replaces the whole argument prefix with the item's value on
+			// selection, so model values carry the role too (see scopeCompletions).
 			return filtered.length > 0
-				? filtered.map(({ value, label, description }) => ({ value, label, description }))
+				? scopeCompletions(
+						first,
+						filtered.map(({ value, label, description }) => ({ value, label, description })),
+					)
 				: null;
 		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {

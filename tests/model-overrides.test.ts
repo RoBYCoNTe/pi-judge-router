@@ -12,6 +12,7 @@ import {
 	isRole,
 	modelSearchText,
 	runModelsCommand,
+	scopeCompletions,
 	type ModelsCommandDeps,
 	type Role,
 	type RoleSetting,
@@ -139,6 +140,35 @@ describe("buildModelCompletions", () => {
 			{ id: "accounts/fireworks/models/glm-5p3-flash", provider: "fireworks" },
 		]);
 		expect(entries.map((entry) => entry.label)).toEqual(["glm-5.3-flash", "glm-5p3-flash"]);
+	});
+});
+
+describe("scopeCompletions", () => {
+	test("keeps the role when a model is picked, since pi-tui replaces the whole argument", () => {
+		// pi-tui's applyCompletion drops the entire argument text and writes the
+		// item value: without the scope, `/judge-models judge glm` + pick becomes
+		// `/judge-models fireworks/accounts/...` and the role is lost.
+		const [entry] = scopeCompletions("judge", [
+			{ value: "fireworks/accounts/fireworks/models/glm-5p3-flash", label: "glm-5p3-flash" },
+		]);
+		expect(entry!.value).toBe("judge fireworks/accounts/fireworks/models/glm-5p3-flash");
+		expect(entry!.label).toBe("glm-5p3-flash");
+	});
+
+	test("keeps the reset keyword, so the reconstructed line is still a reset", () => {
+		const targets = scopeCompletions(
+			"reset",
+			[...ROLES, "all"].map((role) => ({ value: role, label: role })),
+		);
+		expect(targets.map((target) => target.value)).toContain("reset all");
+		expect(targets[0]!.value).toBe("reset judge");
+	});
+
+	test("preserves extra fields such as the description", () => {
+		const [entry] = scopeCompletions("strong", [
+			{ value: "zai/glm-5.3-flash", label: "glm-5.3-flash", description: "zai" },
+		]);
+		expect(entry!.description).toBe("zai");
 	});
 });
 

@@ -172,6 +172,23 @@ export interface ModelLookupResult {
 	reason?: string;
 }
 
+/**
+ * Prefix every completion value with the tokens already typed before the query.
+ *
+ * pi-tui's slash-command argument autocomplete replaces the *entire* argument
+ * text — everything after the command name — with the selected item's `value`,
+ * not just the token under the cursor. A bare id would therefore drop the role
+ * in `/judge-models judge <model>`, and a bare target would drop the keyword in
+ * `/judge-models reset <role>`. Scoping the values under those tokens makes the
+ * reconstructed line the same command the user was already writing.
+ */
+export function scopeCompletions<T extends { value: string }>(
+	scope: string,
+	entries: readonly T[],
+): T[] {
+	return entries.map((entry) => ({ ...entry, value: `${scope} ${entry.value}` }));
+}
+
 export interface ModelsCommandDeps {
 	base: readonly RoleSetting[];
 	overrides: RoleOverrides;
