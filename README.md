@@ -196,9 +196,13 @@ its own space and leaves the status row to the other extensions. `JUDGE_ROUTER_P
 moves it above the editor; `=status` puts it back on the shared row.
 
 ```
-→ deepseek/deepseek-flash · ds $45.94 · zai 5h █░░░ 32% ⟳1h · W ░░░░ 6% ⟳3d · sess ds $0.67 zai $0.13
+exec → deepseek/deepseek-flash · ds $45.94 · zai 5h █░░░ 32% ⟳1h · W ░░░░ 6% ⟳3d · sess ds $0.67 zai $0.13
 ```
 
+- the **role the router is working as** (`cheap`, `strong`, `exec`), prefixed to the model, so the
+  line answers *what* is running this turn and not only *where*: `strong` means the session reached
+  the complex tier, `exec` the ordinary implementer, `cheap` the ordinary planner. It is cleared when
+  a physical model is selected, since the router is not in play then;
 - the **provider-qualified model actually dispatched**, so a `glm-5.3-flash` is never ambiguous
   between z.ai and Fireworks;
 - each probe reading, with the provider name in front (a bare bar says nothing about whose quota it
@@ -210,8 +214,9 @@ moves it above the editor; `=status` puts it back on the shared row.
 `JUDGE_ROUTER_STATUS=compact` drops the bars and the split; `off` disables the line entirely.
 
 The line is there from `session_start`, showing the current selection (`judge/auto`, or `→ provider/id`
-when a physical model is selected), so the plugin never looks dead before the first dispatch. It then
-refreshes on every dispatch, every probe and every `turn_end`, and it follows a manual switch to a
+when a physical model is selected), so the plugin never looks dead before the first dispatch. The role
+prefix appears once the first request has been routed, since that is when the router knows which model
+it is working as. It then refreshes on every dispatch, every probe and every `turn_end`, and it follows a manual switch to a
 physical model — so it stays accurate (and keeps tracking session cost) even when the router is not
 in play, instead of freezing on the last dispatched model.
 

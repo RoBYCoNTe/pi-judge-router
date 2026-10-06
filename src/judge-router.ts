@@ -214,6 +214,13 @@ const notified = new Map<string, boolean>();
 let routed = "";
 
 /**
+ * The role the router last worked as (`cheap`, `strong`, `exec`), shown in the
+ * footer so the line answers "what is running this turn", not only "where".
+ * Cleared when a physical model is selected and route() stops being called.
+ */
+let workingAs = "";
+
+/**
  * Latest context seen by any handler. `getArgumentCompletions` receives only
  * the typed prefix, so the model list for the completion has to come from
  * somewhere: this is that somewhere.
@@ -255,7 +262,9 @@ const WIDGET_KEY = "judge-router";
 /** Assemble the line's text; `undefined` when there is nothing to show. */
 function renderStatusText(ctx: ExtensionContext): string | undefined {
 	const parts: string[] = [];
-	if (routed) parts.push(routed);
+	if (workingAs && routed) parts.push(`${workingAs} ${routed}`);
+	else if (workingAs) parts.push(workingAs);
+	else if (routed) parts.push(routed);
 
 	const readings: string[] = [];
 	for (const provider of [...health.keys()].sort()) {
@@ -563,6 +572,8 @@ export default function (pi: ExtensionAPI) {
 					? `${model.provider}/${model.id}`
 					: `→ ${model.provider}/${model.id}`;
 		}
+		// A physical selection means the router is not the one working.
+		if (model?.provider !== "judge") workingAs = "";
 		refreshReadings(ctx);
 	});
 
@@ -572,6 +583,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("model_select", async (event, ctx) => {
 		if (event.model.provider !== "judge") {
 			routed = `→ ${event.model.provider}/${event.model.id}`;
+			workingAs = "";
 		}
 		refreshStatus(ctx);
 	});
@@ -592,6 +604,7 @@ export default function (pi: ExtensionAPI) {
 			// is output-heavy work on a large context, which is exactly the profile
 			// the implementer is priced for, whatever tier the session reached.
 			if (request.reason === "direct") {
+				workingAs = "exec";
 				return routeTo(
 					request,
 					ctx,
@@ -677,9 +690,10 @@ export default function (pi: ExtensionAPI) {
 				phase === "planning" && editedThisTurn(request.messages)
 					? "implementation"
 					: phase;
+			const role = roleFor(nextPhase, tier);
 			if (nextPhase !== phase) {
 				ctx.ui.notify(
-					`judge/auto: -> ${targetKey(roleTarget(roleFor(nextPhase, tier)))} (implementation)`,
+					`judge/auto: -> ${targetKey(roleTarget(role))} (implementation)`,
 					"info",
 				);
 			}
@@ -693,11 +707,12 @@ export default function (pi: ExtensionAPI) {
 				state.role === undefined &&
 				state.model === undefined;
 			const nextState: RouterState = { phase: nextPhase, tier };
+			workingAs = role;
 
 			return routeTo(
 				request,
 				ctx,
-				roleTarget(roleFor(nextPhase, tier)),
+				roleTarget(role),
 				unchanged ? state : nextState,
 				nextPhase === "implementation"
 					? IMPLEMENT_THINKING

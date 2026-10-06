@@ -201,6 +201,12 @@ can label that difference, because the selected provider is the virtual one. Spl
 numbers per provider is the cheapest way to make the consumption legible, which is why the status
 line ends with `sess ds $0.67 zai $0.13` instead of one total.
 
+One thing the line could not answer before is *which* role the router is working as: a virtual model
+shows up as `judge/auto` everywhere, so the physical model said nothing about whether the session was
+planning cheap, planning strong, or implementing. It now prefixes the role (`cheap`, `strong`, `exec`)
+to the dispatched model, and clears it when a physical model is selected, since the router is not the
+one working then.
+
 One more design note on the status line: the probe used to return a boolean plus a detail string.
 It now returns structured readings — quota windows with percentages and reset times, a balance with
 its currency — and the formatting lives in a separate module. A boolean would have thrown the number
