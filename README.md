@@ -8,12 +8,17 @@ One model to select — `judge/auto` — three decisions underneath:
 
 | Situation | Model |
 |---|---|
-| First request of a session, judge rates the task ordinary | cheap planner |
-| First request of a session, judge rates the task complex | strong planner |
-| After the first successful `edit`/`write` | implementation model |
+| Judge rates the work ordinary | cheap planner, then the `exec` implementer |
+| Judge rates the work complex | strong model, in planning and implementation alike |
+| After the first successful `edit`/`write` | the implementer for the current tier |
 | `retry`, after a failure | the model that answered (prompt cache survives) |
-| Compaction and other out-of-loop requests | implementation model |
+| Compaction and other out-of-loop requests | `exec` implementer |
 | Primary provider is out of credit/quota | its Fireworks equivalent |
+
+Complexity is re-read at **every new user message**, but the tier **ratchets**: a session can move
+up to the strong model when the work grows, and never back down on its own. That keeps the policy
+cache-friendly — a model switch forfeits the warm prompt cache, so the router prefers few, permanent
+escalations to a per-turn oscillation.
 
 Defaults target `zai/glm-5.3-flash`, `zai/glm-5.3` and `deepseek/deepseek-flash`, with
 `fireworks/accounts/fireworks/models/*` as the substitutes. All of it is configurable.
@@ -29,8 +34,9 @@ assumed:
    `out of budget`, `quota exceeded`, `available balance`, `billing`, `usage limit`) as **terminal**, so
    `route(reason: "retry")` never fires for them and error-driven fallback extensions never see them.
    The only reliable way to react is to check *before* dispatching.
-3. **Switching models costs a prompt cache miss.** So the router switches as little as possible: once,
-   after planning succeeds, and never on a retry.
+3. **Switching models costs a prompt cache miss.** So the router re-reads the judge often but
+   switches rarely: the complexity tier *ratchets* — a session moves up to the strong model when the
+   work grows, never back down — and a retry stays on the model that answered.
 
 The result is a router that treats "which model" as an economic decision with two inputs: task
 difficulty (a judgement, so a judge model) and provider availability (a fact, so code).
@@ -112,9 +118,9 @@ The router picks a model per request from four roles:
 | Role | Environment variable | Default | Governs |
 |---|---|---|---|
 | `judge` | `JUDGE_ROUTER_JUDGE` | `typesafe/jev-latest` | the classifier that rates task complexity |
-| `cheap` | `JUDGE_ROUTER_CHEAP` | `zai/glm-5.3-flash` | planning for ordinary tasks |
-| `strong` | `JUDGE_ROUTER_STRONG` | `zai/glm-5.3` | planning for tasks the judge calls complex |
-| `exec` | `JUDGE_ROUTER_IMPLEMENT` | `deepseek/deepseek-flash` | implementation and compaction |
+| `cheap` | `JUDGE_ROUTER_CHEAP` | `zai/glm-5.3-flash` | ordinary work, while the session is on the low tier |
+| `strong` | `JUDGE_ROUTER_STRONG` | `zai/glm-5.3` | complex work, in planning and implementation |
+| `exec` | `JUDGE_ROUTER_IMPLEMENT` | `deepseek/deepseek-flash` | ordinary implementation and compaction |
 
 Environment variables are the deployment-time configuration. When a single
 session needs something different, and restarting is not an option, use the

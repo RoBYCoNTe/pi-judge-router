@@ -104,21 +104,43 @@ regex-based and misses the quota message above.
 Doing it inside the router avoids both problems: the decision happens before dispatch, it knows the
 exact model being replaced, and no prompt is ever re-sent.
 
-## 6. Why the swap happens once, after the first edit
+## 6. Why the tier ratchets, and the swap happens once per phase
 
 Model switches forfeit the warm prompt cache, and on long contexts the re-read is the dominant cost.
-So the router takes at most one switch per session: the planner explores and plans, and as soon as it
-has written something successfully, the implementer takes over. `retry` explicitly stays on the model
-that answered, with its existing cache, rather than re-deciding.
+The naive reading of that fact is "judge rarely". The router does the opposite, and the reason is
+that the two costs are not the same size: a Jev call is a few hundred tokens, while a cold cache on a
+large context is the whole prefix at full input price. So the judge is re-read on **every new user
+message** — cheap, and the only moment the goal can actually change — while the **tier ratchets**:
 
-The same reasoning puts compaction (`reason: "direct"`) on the implementation model: it is output-heavy
-work on a large context, which is exactly the profile the implementation tier is priced for.
+```
+tier = high if the session has ever read complex, else low if p(complex) >= threshold
+```
 
-One consequence of that design is worth recording: because the switch is sticky, the session state has
-to store the **role** and not the resolved model. Storing the model would mean that a `/judge-models`
-override could not take effect until the next session, which is the opposite of what an override is
-for. Storing the role means every request re-resolves it, so a change lands on the very next request,
-and the legacy `model` field keeps older sessions working.
+Once a session is called complex it stays complex. That is what makes frequent judging affordable: a
+switch only happens when the verdict really changed, and it only ever changes in one direction. Real
+work drifts from simple to complex far more often than the reverse, and over-provisioning is the safe
+side anyway, so a ratchet matches both the workload and the economics. It also removes the failure
+mode the naive design would have: a session that flaps between the cheap and the strong model every
+few turns, never letting either cache warm.
+
+The phase swap stays once per session. The planner explores and plans; as soon as it has written
+something successfully, the implementer takes over — the strong model if the session reached the
+complex tier, `exec` otherwise. `retry` explicitly stays on the model that answered, with its
+existing cache, rather than re-deciding. Compaction (`reason: "direct"`) stays on `exec`: it is
+output-heavy work on a large context, which is exactly the profile the implementation tier is priced
+for, whatever tier the session reached.
+
+A tool continuation is never re-judged. It cannot change the goal, so scoring it would only pay the
+classifier for the same answer; pi already labels the moment a new goal can appear — the first request
+after a user message comes in as `reason: "user"`, and every other request in the turn as
+`reason: "continuation"` — so the router keys off that instead of diffing messages itself.
+
+One consequence of the design is worth recording: because the choice is sticky, the session state
+stores the **tier** and the **phase**, not the resolved model. Storing the model would mean that a
+`/judge-models` override could not take effect until the next session, which is the opposite of what
+an override is for. Storing the tier means every request re-resolves the role from tier and phase, so
+a change lands on the very next request; the legacy `role` and `model` fields keep older sessions
+working.
 
 ## 7. Testing strategy
 

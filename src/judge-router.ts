@@ -5,13 +5,18 @@
  *
  * Registered as `judge/auto`. The routing rules:
  *
- *   first request of the session -> the judge (TypeSafe Jev by default)
- *       rates the first user message; complex work goes to the strong model,
- *       everything else to the cheap one
- *   after the first successful edit/write -> the implementation model, for the
- *       rest of the session
+ *   every new user message -> the judge (TypeSafe Jev by default) re-rates the
+ *       task; ordinary work plans with the cheap model, complex work with the
+ *       strong one. A tool continuation is not re-scored: it cannot change the
+ *       goal.
+ *   the tier ratchets -> once a session is rated complex it stays complex, so
+ *       the model only ever moves upward. A switch forfeits the warm prompt
+ *       cache, so the router wants few, permanent escalations rather than a
+ *       per-turn oscillation.
+ *   after the first successful edit/write -> the implementer for the current
+ *       tier: the strong model when complex, the exec model when ordinary
  *   retry -> the model that answered, so the prompt cache survives
- *   compaction and other out-of-loop requests -> the implementation model
+ *   compaction and other out-of-loop requests -> the exec implementer
  *
  * Before routing to a probed provider the router asks whether that provider
  * still has credit/quota (cached, fail-open). If it does not, the Fireworks
@@ -70,6 +75,12 @@ import {
 	type Role,
 	type RoleSetting,
 } from "./model-overrides.ts";
+import {
+	ratchetTier,
+	roleFor,
+	tierFromRole,
+	type RouterState,
+} from "./routing.ts";
 import {
 	formatUsage,
 	loadStore,
@@ -408,18 +419,6 @@ function recordJudgeUsage(usage: { input?: number; output?: number } | undefined
 
 type ThinkingLevel = ModelRouteRequest<RouterState>["thinkingLevel"];
 
-/**
- * Which role serves a phase. The role is what gets stored in the session state,
- * not the resolved model, so a `/judge-models` override applies from the next
- * request instead of waiting for a new session.
- */
-interface RouterState {
-	phase: "planning" | "implementation";
-	role?: Role;
-	/** Written by versions before roles existed; still honoured on resume. */
-	model?: Target;
-}
-
 type RouterRequest = ModelRouteRequest<RouterState>;
 
 /** Swap in the substitute when the primary provider is exhausted. */
@@ -462,7 +461,7 @@ async function routeTo(
 	request: RouterRequest,
 	ctx: ExtensionContext,
 	target: Target,
-	state: RouterState,
+	state: RouterState | undefined,
 	thinkingLevel: ThinkingLevel,
 ): Promise<ModelRoute<RouterState>> {
 	const resolved = await withFallback(request, ctx, target);
@@ -472,6 +471,8 @@ async function routeTo(
 	}
 	routed = `→ ${targetKey(resolved)}`;
 	refreshStatus(ctx);
+	// Returning `request.state` itself means "keep the current state": pi stores
+	// a new entry only for a new object (and ignores it for `direct` requests).
 	return { model, thinkingLevel, state };
 }
 
@@ -494,14 +495,17 @@ function editedThisTurn(messages: readonly Message[]): boolean {
 }
 
 /**
- * Ask the judge how demanding the work is, and return the role to plan with.
- * Every failure path (no classifier, transport error, unexpected answer)
- * degrades to the cheap role: routing must never fail a request.
+ * Ask the judge how demanding the work is.
+ *
+ * Returns the probability of "complex", or `undefined` on every failure path
+ * (no classifier, transport error, unexpected answer). The caller keeps the
+ * tier it already had when the reading is missing: a broken judge must never
+ * downgrade a session that was already escalated.
  */
-async function choosePlanningRole(
+async function judgeComplexity(
 	request: RouterRequest,
 	ctx: ExtensionContext,
-): Promise<Role> {
+): Promise<number | undefined> {
 	try {
 		const reference = roleTarget("judge");
 		const judge = ctx.modelRegistry.findOfType(
@@ -509,7 +513,7 @@ async function choosePlanningRole(
 			reference.provider,
 			reference.id,
 		);
-		if (!judge) return "cheap";
+		if (!judge) return undefined;
 
 		const result = await ctx.modelRegistry.classify(
 			judge,
@@ -534,21 +538,15 @@ async function choosePlanningRole(
 
 		const answer =
 			result.stopReason === "stop" ? result.answers.complexity : undefined;
-		if (answer?.type !== "choice") return "cheap";
+		if (answer?.type !== "choice") return undefined;
 
-		const pComplex = answer.probabilities?.complex ?? 0;
-		const role: Role = pComplex >= COMPLEX_THRESHOLD ? "strong" : "cheap";
-		ctx.ui.notify(
-			`judge/auto: planning with ${role}, ${targetKey(roleTarget(role))} (p_complex=${pComplex.toFixed(2)})`,
-			"info",
-		);
-		return role;
+		return answer.probabilities?.complex ?? 0;
 	} catch (error) {
 		ctx.ui.notify(
-			`judge/auto: judge unavailable, planning with cheap (${error instanceof Error ? error.message : String(error)})`,
+			`judge/auto: judge unavailable, keeping the current tier (${error instanceof Error ? error.message : String(error)})`,
 			"warning",
 		);
-		return "cheap";
+		return undefined;
 	}
 }
 
@@ -590,13 +588,15 @@ export default function (pi: ExtensionAPI) {
 		contextWindow: 1_000_000,
 		maxTokens: 131_072,
 		async route(request, ctx) {
-			// Out-of-loop requests (compaction summaries, direct calls).
+			// Out-of-loop requests (compaction summaries, direct calls). Compaction
+			// is output-heavy work on a large context, which is exactly the profile
+			// the implementer is priced for, whatever tier the session reached.
 			if (request.reason === "direct") {
 				return routeTo(
 					request,
 					ctx,
 					roleTarget("exec"),
-					{ phase: "implementation", role: "exec" },
+					undefined,
 					IMPLEMENT_THINKING,
 				);
 			}
@@ -611,62 +611,95 @@ export default function (pi: ExtensionAPI) {
 					request,
 					ctx,
 					failed,
-					request.state ?? { phase: "implementation", role: "exec" },
+					request.state,
 					request.failed.thinkingLevel ?? request.thinkingLevel,
 				);
 			}
 
 			const state = request.state;
-			const role = state?.role !== undefined && isRole(state.role) ? state.role : undefined;
 
-			// A session written before roles existed: honour its model in the planning
-			// phase, and repair it to the exec role once implementation has started.
-			if (state !== undefined && role === undefined && state.model !== undefined) {
+			// A session written before roles existed: honour its model in the
+			// planning phase, and repair it to the implementer once implementation
+			// has started. Sessions from the role era are migrated to a tier below.
+			if (
+				state !== undefined &&
+				state.tier === undefined &&
+				state.role === undefined &&
+				state.model !== undefined
+			) {
 				if (state.phase === "implementation") {
 					return routeTo(
 						request,
 						ctx,
 						roleTarget("exec"),
-						{ phase: "implementation", role: "exec" },
+						{ phase: "implementation", tier: "low" },
 						IMPLEMENT_THINKING,
 					);
 				}
 				return routeTo(request, ctx, state.model, state, request.thinkingLevel);
 			}
 
-			// First request of the session: let the judge pick the planning role.
-			if (state === undefined || role === undefined) {
-				const picked = await choosePlanningRole(request, ctx);
-				return routeTo(
-					request,
-					ctx,
-					roleTarget(picked),
-					{ phase: "planning", role: picked },
-					request.thinkingLevel,
+			const phase = state?.phase ?? "planning";
+			let tier = state?.tier ?? tierFromRole(state?.role);
+
+			// Re-read the judge on every new user message — pi reports that as
+			// `reason: "user"`, the first request after a prompt, steering, or
+			// follow-up. A tool continuation cannot change the goal, so scoring it
+			// would only pay the classifier for the same answer. An empty tier is
+			// also judged: it means the router was only just adopted mid-session.
+			// The tier ratchets up, so a calmer reading never undoes an escalation
+			// (see `routing.ts`).
+			if (request.reason === "user" || tier === undefined) {
+				const previous = tier;
+				const pComplex = await judgeComplexity(request, ctx);
+				if (pComplex === undefined) {
+					tier ??= "low";
+				} else {
+					tier = ratchetTier(previous, pComplex, COMPLEX_THRESHOLD);
+					const chosen = roleFor(phase, tier);
+					if (previous === undefined) {
+						ctx.ui.notify(
+							`judge/auto: ${phase} with ${chosen}, ${targetKey(roleTarget(chosen))} (p_complex=${pComplex.toFixed(2)})`,
+							"info",
+						);
+					} else if (tier !== previous) {
+						ctx.ui.notify(
+							`judge/auto: escalating to ${chosen} (p_complex=${pComplex.toFixed(2)})`,
+							"info",
+						);
+					}
+				}
+			}
+			tier ??= "low";
+
+			// The planner made its first edit: hand the rest to the implementer.
+			const nextPhase =
+				phase === "planning" && editedThisTurn(request.messages)
+					? "implementation"
+					: phase;
+			if (nextPhase !== phase) {
+				ctx.ui.notify(
+					`judge/auto: -> ${targetKey(roleTarget(roleFor(nextPhase, tier)))} (implementation)`,
+					"info",
 				);
 			}
 
-			// The planner made its first edit: hand the rest to the implementer.
-			if (state.phase === "planning" && editedThisTurn(request.messages)) {
-				ctx.ui.notify(
-					`judge/auto: -> ${targetKey(roleTarget("exec"))} (implementation)`,
-					"info",
-				);
-				return routeTo(
-					request,
-					ctx,
-					roleTarget("exec"),
-					{ phase: "implementation", role: "exec" },
-					IMPLEMENT_THINKING,
-				);
-			}
+			// Return `request.state` itself when nothing changed, so an unchanged
+			// turn does not append a fresh state entry to the session branch.
+			const unchanged =
+				state !== undefined &&
+				state.phase === nextPhase &&
+				state.tier === tier &&
+				state.role === undefined &&
+				state.model === undefined;
+			const nextState: RouterState = { phase: nextPhase, tier };
 
 			return routeTo(
 				request,
 				ctx,
-				roleTarget(role),
-				state,
-				state.phase === "implementation"
+				roleTarget(roleFor(nextPhase, tier)),
+				unchanged ? state : nextState,
+				nextPhase === "implementation"
 					? IMPLEMENT_THINKING
 					: request.thinkingLevel,
 			);

@@ -18,9 +18,9 @@ export const ROLES: readonly Role[] = ["judge", "cheap", "strong", "exec"];
 /** One line per role, for the completion list and the status output. */
 export const ROLE_HELP: Record<Role, string> = {
 	judge: "classifier that rates task complexity",
-	cheap: "planner for ordinary tasks",
-	strong: "planner for tasks the judge calls complex",
-	exec: "implementation and compaction",
+	cheap: "ordinary work while the session is on the low tier",
+	strong: "complex work, in planning and implementation",
+	exec: "ordinary implementation and compaction",
 };
 
 export type RoleSource = "override" | "env" | "default";
